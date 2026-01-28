@@ -16,6 +16,7 @@ class IndicatorValues:
     sma_20: float
     sma_50: float
     sma_200: float
+    ema_200: float  # Added for MACD_EMA_Trend strategy
     bb_upper: float
     bb_middle: float
     bb_lower: float
@@ -26,6 +27,10 @@ class IndicatorValues:
     adx: float
     plus_di: float
     minus_di: float
+    # Window-based trend confirmation
+    ema_200_trend: str = "neutral"  # "bullish", "bearish", or "neutral"
+    ema_200_bars_above: int = 0
+    ema_200_bars_below: int = 0
 
 
 def calculate_all_indicators(data: pd.DataFrame) -> Tuple[pd.DataFrame, IndicatorValues]:
@@ -49,6 +54,9 @@ def calculate_all_indicators(data: pd.DataFrame) -> Tuple[pd.DataFrame, Indicato
     df['sma_20'] = ta.trend.SMAIndicator(close, window=20).sma_indicator()
     df['sma_50'] = ta.trend.SMAIndicator(close, window=50).sma_indicator()
     df['sma_200'] = ta.trend.SMAIndicator(close, window=200).sma_indicator()
+
+    # EMA 200 (for MACD_EMA_Trend strategy)
+    df['ema_200'] = ta.trend.EMAIndicator(close, window=200).ema_indicator()
 
     # MACD
     macd_indicator = ta.trend.MACD(close)
@@ -78,6 +86,9 @@ def calculate_all_indicators(data: pd.DataFrame) -> Tuple[pd.DataFrame, Indicato
 
     df['atr'] = ta.volatility.AverageTrueRange(high, low, close, window=14).average_true_range()
 
+    # Calculate window-based EMA 200 trend confirmation
+    ema_200_trend, bars_above, bars_below = _calculate_ema_200_trend(df)
+
     # Get latest values
     latest = df.iloc[-1]
     indicator_values = IndicatorValues(
@@ -88,6 +99,7 @@ def calculate_all_indicators(data: pd.DataFrame) -> Tuple[pd.DataFrame, Indicato
         sma_20=_safe_float(latest.get('sma_20')),
         sma_50=_safe_float(latest.get('sma_50')),
         sma_200=_safe_float(latest.get('sma_200')),
+        ema_200=_safe_float(latest.get('ema_200')),
         bb_upper=_safe_float(latest.get('bb_upper')),
         bb_middle=_safe_float(latest.get('bb_middle')),
         bb_lower=_safe_float(latest.get('bb_lower')),
@@ -98,6 +110,9 @@ def calculate_all_indicators(data: pd.DataFrame) -> Tuple[pd.DataFrame, Indicato
         adx=_safe_float(latest.get('adx')),
         plus_di=_safe_float(latest.get('plus_di')),
         minus_di=_safe_float(latest.get('minus_di')),
+        ema_200_trend=ema_200_trend,
+        ema_200_bars_above=bars_above,
+        ema_200_bars_below=bars_below,
     )
 
     return df, indicator_values
@@ -108,6 +123,83 @@ def _safe_float(value) -> float:
     if value is None or pd.isna(value):
         return 0.0
     return float(value)
+
+
+def _calculate_ema_200_trend(df: pd.DataFrame, window: int = 6) -> Tuple[str, int, int]:
+    """
+    Calculate window-based EMA 200 trend confirmation.
+
+    From MACD_EMA_Trend strategy: requires ALL bars in window to be on same side of EMA 200.
+
+    Args:
+        df: DataFrame with 'Close', 'Open', and 'ema_200' columns
+        window: Number of consecutive bars to check (default 6)
+
+    Returns:
+        Tuple of (trend_direction, consecutive_bars_above, consecutive_bars_below)
+    """
+    if 'ema_200' not in df.columns or len(df) < window:
+        return "neutral", 0, 0
+
+    # Get the last N bars
+    recent = df.tail(window)
+
+    # Check if ALL bars (both Open and Close) are above EMA 200
+    all_above = ((recent['Close'] > recent['ema_200']) &
+                 (recent['Open'] > recent['ema_200'])).all()
+
+    # Check if ALL bars (both Open and Close) are below EMA 200
+    all_below = ((recent['Close'] < recent['ema_200']) &
+                 (recent['Open'] < recent['ema_200'])).all()
+
+    # Count consecutive bars above/below
+    bars_above = 0
+    bars_below = 0
+
+    for i in range(len(df) - 1, -1, -1):
+        row = df.iloc[i]
+        if pd.isna(row.get('ema_200')):
+            break
+        if row['Close'] > row['ema_200'] and row['Open'] > row['ema_200']:
+            if bars_below == 0:  # Still counting above
+                bars_above += 1
+            else:
+                break
+        elif row['Close'] < row['ema_200'] and row['Open'] < row['ema_200']:
+            if bars_above == 0:  # Still counting below
+                bars_below += 1
+            else:
+                break
+        else:
+            break  # Mixed bar, stop counting
+
+    if all_above:
+        return "bullish", bars_above, 0
+    elif all_below:
+        return "bearish", 0, bars_below
+    else:
+        return "neutral", bars_above, bars_below
+
+
+def check_ema_200_trend_confirmed(df: pd.DataFrame, direction: str, window: int = 6) -> bool:
+    """
+    Check if the EMA 200 trend is confirmed for a specific direction.
+
+    Args:
+        df: DataFrame with EMA 200 calculated
+        direction: "bullish" or "bearish"
+        window: Number of bars required on same side
+
+    Returns:
+        True if trend is confirmed in the specified direction
+    """
+    trend, bars_above, bars_below = _calculate_ema_200_trend(df, window)
+
+    if direction == "bullish":
+        return trend == "bullish" and bars_above >= window
+    elif direction == "bearish":
+        return trend == "bearish" and bars_below >= window
+    return False
 
 
 def get_indicator_summary(indicators: IndicatorValues, close: float) -> dict:

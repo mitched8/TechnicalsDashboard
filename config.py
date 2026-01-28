@@ -1,7 +1,7 @@
 """Configuration constants for FX Trading Dashboard."""
 
-from dataclasses import dataclass
-from typing import Dict
+from dataclasses import dataclass, field
+from typing import Dict, List
 
 @dataclass
 class CurrencyPairConfig:
@@ -58,3 +58,146 @@ TRADE_CONFIG = {
     "atr_buffer_multiplier": 0.5,   # Half ATR for entry zone buffer
     "min_rr_ratio": 1.5,            # Minimum R:R to show setup
 }
+
+
+# ============================================================================
+# STRATEGY SETTINGS - User-configurable trading strategy parameters
+# ============================================================================
+
+@dataclass
+class TrendDetectionSettings:
+    """Settings for trend detection methods."""
+    # SMA-based trend detection (original)
+    use_sma_alignment: bool = True
+    sma_periods: List[int] = field(default_factory=lambda: [20, 50, 200])
+
+    # EMA 200 filter (from MACD_EMA_Trend strategy)
+    use_ema_200_filter: bool = False
+    ema_period: int = 200
+
+    # Window-based confirmation (require N bars on same side of EMA)
+    use_window_confirmation: bool = False
+    window_size: int = 6  # Number of consecutive bars required
+
+
+@dataclass
+class EntrySignalSettings:
+    """Settings for entry signal generation methods."""
+    # Standard MACD crossover (original)
+    use_standard_macd: bool = True
+
+    # Pullback resumption - MACD cross while both lines below/above zero (new)
+    use_pullback_resumption: bool = False
+
+    # MACD histogram pattern detection (new)
+    use_histogram_patterns: bool = False
+    histogram_lookback: int = 7  # Bars to analyze for histogram patterns
+    histogram_threshold: float = 4e-6  # Minimum histogram change threshold
+
+    # RSI signals (original)
+    use_rsi_signals: bool = True
+    rsi_oversold: int = 30
+    rsi_overbought: int = 70
+
+    # Stochastic signals (original)
+    use_stochastic_signals: bool = True
+    stoch_oversold: int = 20
+    stoch_overbought: int = 80
+
+
+@dataclass
+class ExitStrategySettings:
+    """Settings for exit strategy / stop loss methods."""
+    # Exit strategy type: "fixed_targets", "trailing_atr", "swing_based"
+    exit_strategy: str = "fixed_targets"
+
+    # Fixed targets settings (original)
+    use_fixed_targets: bool = True
+
+    # Trailing ATR stop settings (from MACD_EMA_Trend strategy)
+    trailing_atr_multiplier: float = 3.75  # Optimal from backtest
+    trailing_atr_ratchet_only: bool = True  # Only tighten, never loosen
+
+    # Swing-based stop settings (from MACD_EMA_Trend strategy)
+    swing_lookback: int = 8  # Bars to look for swing high/low
+    use_swing_atr_hybrid: bool = True  # max(swing, ATR * multiplier)
+
+
+@dataclass
+class SignalFilterSettings:
+    """Settings for signal filtering methods."""
+    # Multi-timeframe alignment filter (original)
+    require_mtf_alignment: bool = False
+    min_aligned_timeframes: int = 2  # Minimum TFs that must agree
+
+    # Regime-change filter (from MACD_EMA_Trend strategy)
+    use_regime_change_filter: bool = False
+    regime_change_ignore_signals: int = 1  # Ignore first N opposite signals
+
+
+@dataclass
+class StrategySettings:
+    """Combined strategy settings container."""
+    trend_detection: TrendDetectionSettings = field(default_factory=TrendDetectionSettings)
+    entry_signals: EntrySignalSettings = field(default_factory=EntrySignalSettings)
+    exit_strategy: ExitStrategySettings = field(default_factory=ExitStrategySettings)
+    signal_filters: SignalFilterSettings = field(default_factory=SignalFilterSettings)
+
+
+def get_default_settings() -> StrategySettings:
+    """Get default strategy settings."""
+    return StrategySettings()
+
+
+def get_macd_ema_trend_preset() -> StrategySettings:
+    """Get preset matching the MACD_EMA_Trend strategy."""
+    return StrategySettings(
+        trend_detection=TrendDetectionSettings(
+            use_sma_alignment=False,
+            use_ema_200_filter=True,
+            use_window_confirmation=True,
+            window_size=6
+        ),
+        entry_signals=EntrySignalSettings(
+            use_standard_macd=False,
+            use_pullback_resumption=True,
+            use_histogram_patterns=True,
+            use_rsi_signals=False,
+            use_stochastic_signals=False
+        ),
+        exit_strategy=ExitStrategySettings(
+            exit_strategy="trailing_atr",
+            use_fixed_targets=False,
+            trailing_atr_multiplier=3.75
+        ),
+        signal_filters=SignalFilterSettings(
+            require_mtf_alignment=False,
+            use_regime_change_filter=True
+        )
+    )
+
+
+def get_conservative_preset() -> StrategySettings:
+    """Get conservative preset with all filters enabled."""
+    return StrategySettings(
+        trend_detection=TrendDetectionSettings(
+            use_sma_alignment=True,
+            use_ema_200_filter=True,
+            use_window_confirmation=True
+        ),
+        entry_signals=EntrySignalSettings(
+            use_standard_macd=True,
+            use_pullback_resumption=True,
+            use_histogram_patterns=True,
+            use_rsi_signals=True,
+            use_stochastic_signals=True
+        ),
+        exit_strategy=ExitStrategySettings(
+            exit_strategy="trailing_atr",
+            use_fixed_targets=True
+        ),
+        signal_filters=SignalFilterSettings(
+            require_mtf_alignment=True,
+            use_regime_change_filter=True
+        )
+    )
