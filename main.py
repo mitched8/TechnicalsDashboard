@@ -16,7 +16,14 @@ from core.signals import (
     summarize_signals, Signal, SignalStrength
 )
 from core.trade_setup import generate_trade_setup, apply_exit_strategy, Bias
-from visualization.charts import create_main_chart, create_mtf_summary_chart
+from core.volatility import (
+    analyze_volatility, calculate_vol_time_series,
+    VolForecast, VolRegime
+)
+from visualization.charts import (
+    create_main_chart, create_mtf_summary_chart,
+    create_main_chart_with_vol, create_vol_chart, create_vol_gauge
+)
 from utils.forex_utils import (
     get_pip_info, format_price, format_pip_distance,
     format_percentage_move, format_level_display
@@ -100,8 +107,12 @@ def main():
         st.page_link("pages/1_Settings.py", label="Configure Strategy", icon="Settings")
 
         st.divider()
-        show_raw_data = st.checkbox("Show Raw Data", value=False)
+
+        # Display options
+        st.subheader("Display")
+        show_vol_analysis = st.checkbox("Show Options/Vol View", value=True)
         show_signals = st.checkbox("Show Signal Details", value=False)
+        show_raw_data = st.checkbox("Show Raw Data", value=False)
 
     # Get pip configuration
     pip_decimal, round_step = get_pip_info(symbol)
@@ -195,6 +206,17 @@ def main():
     # Summarize signals
     signal_summary = summarize_signals(filtered_signals)
 
+    # ========== Volatility Analysis for Options Traders ==========
+    # Add vol indicators dict for vol analysis
+    indicator_dict['adx'] = daily_indicators.adx if daily_indicators else 25
+    indicator_dict['plus_di'] = daily_indicators.plus_di if daily_indicators else 50
+    indicator_dict['minus_di'] = daily_indicators.minus_di if daily_indicators else 50
+
+    vol_analysis = analyze_volatility(daily_data, indicator_dict)
+
+    # Calculate vol time series for charting
+    daily_data_with_vol = calculate_vol_time_series(daily_data)
+
     # ========== Generate trade setup ==========
     atr = float(daily_data['atr'].iloc[-1]) if 'atr' in daily_data.columns else 0.001
     trade_setup = generate_trade_setup(
@@ -227,8 +249,12 @@ def main():
 
     # ========== DISPLAY ==========
 
-    # Row 1: Key Metrics
-    col1, col2, col3, col4 = st.columns(4)
+    # Row 1: Key Metrics (5 columns if vol enabled)
+    if show_vol_analysis:
+        col1, col2, col3, col4, col5 = st.columns(5)
+    else:
+        col1, col2, col3, col4 = st.columns(4)
+        col5 = None
 
     with col1:
         st.metric(
@@ -270,6 +296,18 @@ def main():
             label="Bias",
             value=bias_display
         )
+
+    # Vol metric column
+    if col5:
+        with col5:
+            vol_emoji = vol_analysis.get_vol_bias_emoji()
+            vol_regime_label = vol_analysis.metrics.regime.value.upper()
+            st.metric(
+                label="Vol Regime",
+                value=f"{vol_emoji} {vol_regime_label}",
+                delta=f"{vol_analysis.metrics.vol_change_5d:+.1f}% (5d)"
+            )
+            st.caption(f"1M Vol: {vol_analysis.metrics.rv_1m:.1f}% | {vol_analysis.metrics.rv_percentile:.0f}%ile")
 
     # Show filter warnings
     if ema_200_warning or mtf_warning:
@@ -346,6 +384,64 @@ def main():
         st.info("No actionable trade setup at current levels. " +
                 (trade_setup.reasoning[0] if trade_setup.reasoning else ""))
 
+    # ========== OPTIONS TRADER VIEW ==========
+    if show_vol_analysis:
+        st.divider()
+        st.subheader("Options Trader View")
+
+        # Vol metrics row
+        vol_col1, vol_col2, vol_col3 = st.columns([1, 1, 2])
+
+        with vol_col1:
+            st.markdown("**Volatility Metrics**")
+            st.write(f"1M Realized Vol: **{vol_analysis.metrics.rv_1m:.2f}%**")
+            st.write(f"3M Realized Vol: {vol_analysis.metrics.rv_3m:.2f}%")
+            st.write(f"Vol Percentile: **{vol_analysis.metrics.rv_percentile:.0f}th**")
+            st.write(f"BB Width %ile: {vol_analysis.metrics.bb_width_percentile:.0f}th")
+
+            if vol_analysis.metrics.is_squeeze:
+                st.warning("BB SQUEEZE DETECTED")
+
+        with vol_col2:
+            st.markdown("**Vol Forecast**")
+            forecast_label = vol_analysis.forecast.value.upper()
+            confidence_pct = vol_analysis.forecast_confidence * 100
+
+            if vol_analysis.forecast == VolForecast.EXPANDING:
+                st.success(f"{vol_analysis.get_vol_bias_emoji()} {forecast_label}")
+            elif vol_analysis.forecast == VolForecast.COMPRESSING:
+                st.error(f"{vol_analysis.get_vol_bias_emoji()} {forecast_label}")
+            else:
+                st.info(f"{vol_analysis.get_vol_bias_emoji()} {forecast_label}")
+
+            st.write(f"Confidence: {confidence_pct:.0f}%")
+            st.write(f"Vol Trend: {vol_analysis.metrics.vol_trend.upper()}")
+
+        with vol_col3:
+            st.markdown("**Strategy Suggestion**")
+            st.info(vol_analysis.strategy_suggestion)
+
+            # Show forecast signals in expander
+            with st.expander("Vol Forecast Signals"):
+                for signal in vol_analysis.signals:
+                    if signal.direction == VolForecast.EXPANDING:
+                        icon = "📈"
+                    elif signal.direction == VolForecast.COMPRESSING:
+                        icon = "📉"
+                    else:
+                        icon = "➡️"
+
+                    confidence_badge = f"[{signal.confidence.upper()}]"
+                    st.markdown(f"{icon} **{signal.source}** {confidence_badge}: {signal.reasoning}")
+
+        # Vol Chart
+        st.markdown("**Realized Volatility Time Series**")
+        vol_chart = create_vol_chart(
+            daily_data_with_vol.tail(252),
+            title=f"{symbol.replace('=X', '')} 1M Realized Volatility"
+        )
+        st.plotly_chart(vol_chart, use_container_width=True)
+
     # Signal Details (optional)
     if show_signals:
         st.divider()
@@ -381,12 +477,24 @@ def main():
 
     # Row 4: Main Chart
     st.subheader("Daily Chart with S/R Zones")
-    main_chart = create_main_chart(
-        daily_data.tail(120),
-        sr_result,
-        trade_setup if trade_setup.bias != Bias.NEUTRAL else None,
-        title=f"{symbol.replace('=X', '')} Daily"
-    )
+
+    # Use chart with vol overlay if vol analysis is enabled
+    if show_vol_analysis:
+        chart_data = daily_data_with_vol.tail(120)
+        main_chart = create_main_chart_with_vol(
+            chart_data,
+            sr_result,
+            trade_setup if trade_setup.bias != Bias.NEUTRAL else None,
+            title=f"{symbol.replace('=X', '')} Daily",
+            show_vol=True
+        )
+    else:
+        main_chart = create_main_chart(
+            daily_data.tail(120),
+            sr_result,
+            trade_setup if trade_setup.bias != Bias.NEUTRAL else None,
+            title=f"{symbol.replace('=X', '')} Daily"
+        )
     st.plotly_chart(main_chart, use_container_width=True)
 
     # Row 5: MTF Overview
