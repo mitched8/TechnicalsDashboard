@@ -1231,3 +1231,335 @@ def create_iv_rv_overlay_chart(
     fig.update_yaxes(title_text="Volatility %", row=2, col=1)
 
     return fig
+
+
+def create_spot_iv_rv_aligned_chart(
+    data: pd.DataFrame,
+    iv_tenor: str = '1M',
+    title: str = "Spot Price with Volatility"
+) -> go.Figure:
+    """
+    Create aligned chart showing spot price with IV and RV subplots.
+
+    Three-panel chart with shared x-axis:
+    1. Spot price candlestick
+    2. Implied volatility for selected tenor
+    3. Realized volatility (1M)
+
+    Args:
+        data: DataFrame with OHLC, IV, and RV columns
+        iv_tenor: IV tenor to display
+        title: Chart title
+
+    Returns:
+        Plotly Figure object
+    """
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        row_heights=[0.5, 0.25, 0.25],
+        subplot_titles=(title, f'Implied Vol ({iv_tenor})', 'Realized Vol (1M)')
+    )
+
+    # Panel 1: Spot price candlestick
+    fig.add_trace(
+        go.Candlestick(
+            x=data.index,
+            open=data['Open'],
+            high=data['High'],
+            low=data['Low'],
+            close=data['Close'],
+            name='Spot',
+            increasing_line_color='#26a69a',
+            decreasing_line_color='#ef5350',
+        ),
+        row=1, col=1
+    )
+
+    # Add SMAs to spot chart
+    if 'sma_20' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['sma_20'],
+                mode='lines', name='SMA 20',
+                line=dict(color='#ffeb3b', width=1),
+            ),
+            row=1, col=1
+        )
+    if 'sma_50' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['sma_50'],
+                mode='lines', name='SMA 50',
+                line=dict(color='#2196f3', width=1),
+            ),
+            row=1, col=1
+        )
+
+    iv_col = f'iv_{iv_tenor}'
+
+    # Panel 2: Implied Volatility
+    if iv_col in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data[iv_col],
+                mode='lines',
+                name=f'IV {iv_tenor}',
+                line=dict(color='#9c27b0', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(156, 39, 176, 0.15)',
+            ),
+            row=2, col=1
+        )
+
+        # Add mean line
+        mean_iv = data[iv_col].mean()
+        fig.add_hline(
+            y=mean_iv,
+            line=dict(color='rgba(255,255,255,0.4)', dash='dot', width=1),
+            row=2, col=1
+        )
+
+    # Panel 3: Realized Volatility
+    if 'rv_1m' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data['rv_1m'],
+                mode='lines',
+                name='RV 1M',
+                line=dict(color='#2196f3', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(33, 150, 243, 0.15)',
+            ),
+            row=3, col=1
+        )
+
+        # Add mean line
+        mean_rv = data['rv_1m'].mean()
+        fig.add_hline(
+            y=mean_rv,
+            line=dict(color='rgba(255,255,255,0.4)', dash='dot', width=1),
+            row=3, col=1
+        )
+
+    fig.update_layout(
+        height=700,
+        xaxis_rangeslider_visible=False,
+        template='plotly_dark',
+        showlegend=True,
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1,
+            font=dict(size=10),
+        ),
+        margin=dict(l=60, r=60, t=60, b=40),
+    )
+
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(title_text="Price", row=1, col=1)
+    fig.update_yaxes(title_text="IV %", row=2, col=1)
+    fig.update_yaxes(title_text="RV %", row=3, col=1)
+
+    return fig
+
+
+def create_vol_with_ta_events_chart(
+    data: pd.DataFrame,
+    ta_events: list,
+    iv_tenor: str = '1M',
+    title: str = "Volatility with TA Events"
+) -> go.Figure:
+    """
+    Create IV/RV chart with markers at TA signal event points.
+
+    Shows how volatility behaved around technical analysis events like
+    support breaks, resistance tests, MACD crossovers, etc.
+
+    Args:
+        data: DataFrame with IV and RV columns
+        ta_events: List of dicts with 'date', 'type', 'direction', 'description'
+        iv_tenor: IV tenor to display
+        title: Chart title
+
+    Returns:
+        Plotly Figure object
+    """
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.6, 0.4],
+        subplot_titles=(title, 'IV-RV Spread at Events')
+    )
+
+    iv_col = f'iv_{iv_tenor}'
+
+    # IV time series
+    if iv_col in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data[iv_col],
+                mode='lines',
+                name=f'IV {iv_tenor}',
+                line=dict(color='#9c27b0', width=2),
+            ),
+            row=1, col=1
+        )
+
+    # RV time series
+    if 'rv_1m' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data['rv_1m'],
+                mode='lines',
+                name='RV 1M',
+                line=dict(color='#2196f3', width=2),
+            ),
+            row=1, col=1
+        )
+
+    # Add TA event markers
+    bullish_events = [e for e in ta_events if e.get('direction') == 'bullish']
+    bearish_events = [e for e in ta_events if e.get('direction') == 'bearish']
+    neutral_events = [e for e in ta_events if e.get('direction') not in ['bullish', 'bearish']]
+
+    # Get IV values at event dates for marker placement
+    def get_iv_at_date(date):
+        if iv_col in data.columns and date in data.index:
+            return data.loc[date, iv_col]
+        return None
+
+    # Bullish events (green triangles pointing up)
+    if bullish_events:
+        dates = [e['date'] for e in bullish_events if e['date'] in data.index]
+        ivs = [get_iv_at_date(d) for d in dates]
+        texts = [e.get('description', e.get('type', '')) for e in bullish_events if e['date'] in data.index]
+
+        if dates and any(iv is not None for iv in ivs):
+            fig.add_trace(
+                go.Scatter(
+                    x=dates,
+                    y=ivs,
+                    mode='markers',
+                    name='Bullish Signal',
+                    marker=dict(
+                        symbol='triangle-up',
+                        size=14,
+                        color='#26a69a',
+                        line=dict(color='white', width=1)
+                    ),
+                    text=texts,
+                    hovertemplate='%{text}<br>IV: %{y:.2f}%<extra></extra>',
+                ),
+                row=1, col=1
+            )
+
+    # Bearish events (red triangles pointing down)
+    if bearish_events:
+        dates = [e['date'] for e in bearish_events if e['date'] in data.index]
+        ivs = [get_iv_at_date(d) for d in dates]
+        texts = [e.get('description', e.get('type', '')) for e in bearish_events if e['date'] in data.index]
+
+        if dates and any(iv is not None for iv in ivs):
+            fig.add_trace(
+                go.Scatter(
+                    x=dates,
+                    y=ivs,
+                    mode='markers',
+                    name='Bearish Signal',
+                    marker=dict(
+                        symbol='triangle-down',
+                        size=14,
+                        color='#ef5350',
+                        line=dict(color='white', width=1)
+                    ),
+                    text=texts,
+                    hovertemplate='%{text}<br>IV: %{y:.2f}%<extra></extra>',
+                ),
+                row=1, col=1
+            )
+
+    # Neutral events (yellow circles)
+    if neutral_events:
+        dates = [e['date'] for e in neutral_events if e['date'] in data.index]
+        ivs = [get_iv_at_date(d) for d in dates]
+        texts = [e.get('description', e.get('type', '')) for e in neutral_events if e['date'] in data.index]
+
+        if dates and any(iv is not None for iv in ivs):
+            fig.add_trace(
+                go.Scatter(
+                    x=dates,
+                    y=ivs,
+                    mode='markers',
+                    name='Neutral Signal',
+                    marker=dict(
+                        symbol='circle',
+                        size=10,
+                        color='#ffeb3b',
+                        line=dict(color='white', width=1)
+                    ),
+                    text=texts,
+                    hovertemplate='%{text}<br>IV: %{y:.2f}%<extra></extra>',
+                ),
+                row=1, col=1
+            )
+
+    # IV-RV Spread with event markers
+    if iv_col in data.columns and 'rv_1m' in data.columns:
+        spread = data[iv_col] - data['rv_1m']
+        colors = ['#26a69a' if s >= 0 else '#ef5350' for s in spread.fillna(0)]
+
+        fig.add_trace(
+            go.Bar(
+                x=data.index,
+                y=spread,
+                name='IV-RV Spread',
+                marker_color=colors,
+                opacity=0.6,
+            ),
+            row=2, col=1
+        )
+
+        fig.add_hline(y=0, line=dict(color='rgba(255,255,255,0.5)', width=1), row=2, col=1)
+
+        # Add vertical lines at event dates
+        for event in ta_events:
+            if event['date'] in data.index:
+                color = '#26a69a' if event.get('direction') == 'bullish' else \
+                        '#ef5350' if event.get('direction') == 'bearish' else '#ffeb3b'
+                fig.add_vline(
+                    x=event['date'],
+                    line=dict(color=color, width=1, dash='dot'),
+                    row=2, col=1
+                )
+
+    fig.update_layout(
+        height=550,
+        template='plotly_dark',
+        showlegend=True,
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1,
+            font=dict(size=10),
+        ),
+        margin=dict(l=60, r=60, t=60, b=40),
+    )
+
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(title_text="Volatility %", row=1, col=1)
+    fig.update_yaxes(title_text="Spread %", row=2, col=1)
+
+    return fig
