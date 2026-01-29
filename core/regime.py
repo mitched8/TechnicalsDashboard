@@ -1,11 +1,11 @@
 """Market regime detection for FX Trading Dashboard."""
 
 import pandas as pd
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
-from config import REGIME_CONFIG
+from config import REGIME_CONFIG, SignalFilterSettings
 
 
 class TrendDirection(Enum):
@@ -225,3 +225,228 @@ def _safe_float(value, default: float = 0.0) -> float:
     if value is None or pd.isna(value):
         return default
     return float(value)
+
+
+# ============================================================================
+# REGIME CHANGE FILTER FROM MACD_EMA_TREND STRATEGY
+# ============================================================================
+
+@dataclass
+class RegimeChangeState:
+    """
+    State for tracking regime changes and filtering signals.
+
+    From MACD_EMA_Trend strategy: After a regime change, the first opposite
+    signal(s) are often false signals (whipsaws). This filter zeros out
+    the first N opposite signals after a regime change.
+    """
+    current_regime: TrendDirection
+    previous_regime: Optional[TrendDirection] = None
+    regime_changed: bool = False
+    bars_since_change: int = 0
+    opposite_signals_since_change: int = 0
+    signals_to_ignore: int = 1  # Number of opposite signals to ignore
+
+    def update(self, new_regime: TrendDirection) -> 'RegimeChangeState':
+        """Update state with new regime detection."""
+        if self.current_regime != new_regime:
+            # Regime changed
+            self.previous_regime = self.current_regime
+            self.current_regime = new_regime
+            self.regime_changed = True
+            self.bars_since_change = 0
+            self.opposite_signals_since_change = 0
+        else:
+            self.bars_since_change += 1
+
+        return self
+
+
+def detect_regime_change(
+    current_regime: MarketRegime,
+    previous_regime: Optional[MarketRegime]
+) -> bool:
+    """
+    Detect if a regime change has occurred.
+
+    Args:
+        current_regime: Current market regime
+        previous_regime: Previous market regime
+
+    Returns:
+        True if regime changed
+    """
+    if previous_regime is None:
+        return False
+
+    # Check for trend direction change
+    return current_regime.trend != previous_regime.trend
+
+
+def should_filter_signal(
+    signal_direction: str,
+    regime_state: RegimeChangeState,
+    filter_settings: Optional[SignalFilterSettings] = None
+) -> bool:
+    """
+    Determine if a signal should be filtered due to regime change.
+
+    From MACD_EMA_Trend strategy: After a regime change from bullish to bearish
+    (or vice versa), the first N bearish (or bullish) signals are filtered out
+    to avoid whipsaw trades during the transition period.
+
+    Args:
+        signal_direction: "bullish" or "bearish"
+        regime_state: Current regime change tracking state
+        filter_settings: Signal filter settings
+
+    Returns:
+        True if signal should be filtered (ignored)
+    """
+    if filter_settings is None:
+        filter_settings = SignalFilterSettings()
+
+    if not filter_settings.use_regime_change_filter:
+        return False
+
+    if not regime_state.regime_changed:
+        return False
+
+    signals_to_ignore = filter_settings.regime_change_ignore_signals
+
+    # Check if this is an opposite signal
+    is_opposite = False
+
+    if regime_state.previous_regime == TrendDirection.UP and signal_direction == "bearish":
+        # Changed from bullish to something else, first bearish signals may be false
+        is_opposite = True
+    elif regime_state.previous_regime == TrendDirection.DOWN and signal_direction == "bullish":
+        # Changed from bearish to something else, first bullish signals may be false
+        is_opposite = True
+
+    if is_opposite and regime_state.opposite_signals_since_change < signals_to_ignore:
+        # Increment counter so we only filter N signals, not all of them
+        regime_state.opposite_signals_since_change += 1
+        return True
+
+    return False
+
+
+def create_regime_state(initial_regime: TrendDirection) -> RegimeChangeState:
+    """
+    Create initial regime change tracking state.
+
+    Args:
+        initial_regime: Initial trend direction
+
+    Returns:
+        RegimeChangeState object
+    """
+    return RegimeChangeState(
+        current_regime=initial_regime,
+        previous_regime=None,
+        regime_changed=False,
+        bars_since_change=0,
+        opposite_signals_since_change=0
+    )
+
+
+def detect_regime_history(
+    data: pd.DataFrame,
+    lookback: int = 20
+) -> List[TrendDirection]:
+    """
+    Detect regime history over a lookback period.
+
+    Useful for identifying recent regime changes.
+
+    Args:
+        data: DataFrame with indicators
+        lookback: Number of bars to look back
+
+    Returns:
+        List of TrendDirection for each bar
+    """
+    if len(data) < lookback:
+        lookback = len(data)
+
+    regimes = []
+    config = REGIME_CONFIG
+    adx_threshold = config.get('adx_trending_threshold', 25)
+
+    for i in range(len(data) - lookback, len(data)):
+        row = data.iloc[i]
+        adx = _safe_float(row.get('adx'), 20)
+        plus_di = _safe_float(row.get('plus_di'), 50)
+        minus_di = _safe_float(row.get('minus_di'), 50)
+
+        if adx > adx_threshold:
+            if plus_di > minus_di:
+                regimes.append(TrendDirection.UP)
+            else:
+                regimes.append(TrendDirection.DOWN)
+        else:
+            regimes.append(TrendDirection.RANGING)
+
+    return regimes
+
+
+def get_previous_regime_before_change(
+    data: pd.DataFrame,
+    lookback: int = 20
+) -> Optional[TrendDirection]:
+    """
+    Find the previous regime before the most recent regime change.
+
+    Scans backwards through the regime history to find what the regime was
+    before it changed to the current state.
+
+    Args:
+        data: DataFrame with indicators
+        lookback: Number of bars to look back
+
+    Returns:
+        Previous TrendDirection before the change, or None if no change found
+    """
+    regimes = detect_regime_history(data, lookback)
+
+    if len(regimes) < 2:
+        return None
+
+    current = regimes[-1]
+
+    # Scan backwards to find the first different regime
+    for i in range(len(regimes) - 2, -1, -1):
+        if regimes[i] != current:
+            return regimes[i]
+
+    return None
+
+
+def count_recent_regime_changes(
+    data: pd.DataFrame,
+    lookback: int = 20
+) -> int:
+    """
+    Count the number of regime changes in the lookback period.
+
+    High regime change count indicates choppy/whipsaw conditions.
+
+    Args:
+        data: DataFrame with indicators
+        lookback: Number of bars to look back
+
+    Returns:
+        Number of regime changes
+    """
+    regimes = detect_regime_history(data, lookback)
+
+    if len(regimes) < 2:
+        return 0
+
+    changes = 0
+    for i in range(1, len(regimes)):
+        if regimes[i] != regimes[i-1]:
+            changes += 1
+
+    return changes

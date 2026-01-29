@@ -3,10 +3,12 @@
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
+import numpy as np
 from typing import Optional
 
 from core.support_resistance import SRResult, ZoneType
 from core.trade_setup import TradeSetup, Bias
+from core.implied_vol import IV_TENORS, TENOR_DAYS
 
 
 def create_main_chart(
@@ -368,5 +370,864 @@ def create_regime_indicator(
         margin=dict(l=20, r=20, t=40, b=20),
         template='plotly_dark',
     )
+
+    return fig
+
+
+def create_vol_chart(
+    data: pd.DataFrame,
+    title: str = "Realized Volatility (1M)"
+) -> go.Figure:
+    """
+    Create volatility time series chart for options traders.
+
+    Shows realized vol with percentile bands and squeeze detection.
+
+    Args:
+        data: DataFrame with vol columns (rv_1m, rv_percentile, bb_width)
+        title: Chart title
+
+    Returns:
+        Plotly Figure object
+    """
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.7, 0.3],
+        subplot_titles=(title, 'Vol Percentile & BB Width')
+    )
+
+    # Main volatility time series
+    if 'rv_1m' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data['rv_1m'],
+                mode='lines',
+                name='1M Realized Vol',
+                line=dict(color='#9c27b0', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(156, 39, 176, 0.1)',
+            ),
+            row=1, col=1
+        )
+
+    if 'rv_3m' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data['rv_3m'],
+                mode='lines',
+                name='3M Realized Vol',
+                line=dict(color='#ff9800', width=1, dash='dash'),
+            ),
+            row=1, col=1
+        )
+
+    # Add mean line
+    if 'rv_1m' in data.columns:
+        mean_vol = data['rv_1m'].mean()
+        fig.add_hline(
+            y=mean_vol,
+            line=dict(color='rgba(255,255,255,0.5)', dash='dot', width=1),
+            annotation_text=f"Mean: {mean_vol:.1f}%",
+            annotation_position="right",
+            row=1, col=1
+        )
+
+        # Add high/low bands (1 std dev)
+        std_vol = data['rv_1m'].std()
+        fig.add_hline(
+            y=mean_vol + std_vol,
+            line=dict(color='rgba(244,67,54,0.3)', dash='dot', width=1),
+            row=1, col=1
+        )
+        fig.add_hline(
+            y=mean_vol - std_vol,
+            line=dict(color='rgba(76,175,80,0.3)', dash='dot', width=1),
+            row=1, col=1
+        )
+
+    # Vol percentile subplot
+    if 'rv_percentile' in data.columns:
+        # Color by percentile
+        percentile_colors = [
+            '#ef5350' if p >= 75 else '#26a69a' if p <= 25 else '#9e9e9e'
+            for p in data['rv_percentile'].fillna(50)
+        ]
+
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data['rv_percentile'],
+                mode='lines',
+                name='Vol Percentile',
+                line=dict(color='#2196f3', width=1),
+            ),
+            row=2, col=1
+        )
+
+        # Add reference lines
+        fig.add_hline(y=75, line=dict(color='rgba(244,67,54,0.5)', dash='dash', width=1), row=2, col=1)
+        fig.add_hline(y=25, line=dict(color='rgba(76,175,80,0.5)', dash='dash', width=1), row=2, col=1)
+        fig.add_hline(y=50, line=dict(color='rgba(255,255,255,0.3)', dash='dot', width=1), row=2, col=1)
+
+    # BB Width on secondary y-axis (squeeze indicator)
+    if 'bb_width' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data['bb_width'] * 100,  # Convert to percentage
+                mode='lines',
+                name='BB Width %',
+                line=dict(color='#ffeb3b', width=1),
+                yaxis='y4',
+            ),
+            row=2, col=1
+        )
+
+    fig.update_layout(
+        height=500,
+        template='plotly_dark',
+        showlegend=True,
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1,
+            font=dict(size=10),
+        ),
+        margin=dict(l=60, r=60, t=60, b=40),
+        yaxis4=dict(
+            title='BB Width %',
+            overlaying='y3',
+            side='right',
+            showgrid=False,
+        ),
+    )
+
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(title_text="Volatility %", row=1, col=1)
+    fig.update_yaxes(title_text="Percentile", range=[0, 100], row=2, col=1)
+
+    return fig
+
+
+def create_vol_gauge(
+    current_vol: float,
+    vol_percentile: float,
+    forecast: str,
+    forecast_confidence: float
+) -> go.Figure:
+    """
+    Create a volatility gauge for quick visual reference.
+
+    Args:
+        current_vol: Current 1M realized vol
+        vol_percentile: Current vol percentile (0-100)
+        forecast: "expanding", "compressing", or "neutral"
+        forecast_confidence: Confidence level (0-1)
+
+    Returns:
+        Plotly Figure object
+    """
+    # Determine color based on percentile
+    if vol_percentile >= 75:
+        color = "#ef5350"  # Red for high vol
+        zone_label = "HIGH"
+    elif vol_percentile <= 25:
+        color = "#26a69a"  # Green for low vol
+        zone_label = "LOW"
+    else:
+        color = "#9e9e9e"  # Gray for normal
+        zone_label = "NORMAL"
+
+    # Forecast indicator
+    if forecast == "expanding":
+        forecast_symbol = "📈"
+    elif forecast == "compressing":
+        forecast_symbol = "📉"
+    else:
+        forecast_symbol = "➡️"
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=vol_percentile,
+        number={'suffix': '%ile', 'font': {'size': 24}},
+        title={'text': f"Vol: {current_vol:.1f}% | {zone_label} | {forecast_symbol}", 'font': {'size': 14}},
+        gauge={
+            'axis': {'range': [0, 100], 'tickwidth': 1},
+            'bar': {'color': color, 'thickness': 0.75},
+            'bgcolor': 'rgba(0,0,0,0)',
+            'borderwidth': 0,
+            'steps': [
+                {'range': [0, 25], 'color': 'rgba(38,166,154,0.3)'},
+                {'range': [25, 75], 'color': 'rgba(158,158,158,0.2)'},
+                {'range': [75, 100], 'color': 'rgba(239,83,80,0.3)'},
+            ],
+            'threshold': {
+                'line': {'color': 'white', 'width': 2},
+                'thickness': 0.75,
+                'value': vol_percentile
+            }
+        }
+    ))
+
+    fig.update_layout(
+        height=200,
+        margin=dict(l=20, r=20, t=50, b=20),
+        template='plotly_dark',
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+    )
+
+    return fig
+
+
+def create_main_chart_with_vol(
+    data: pd.DataFrame,
+    sr_result: SRResult,
+    trade_setup: Optional[TradeSetup] = None,
+    title: str = "FX Analysis",
+    show_vol: bool = True
+) -> go.Figure:
+    """
+    Create main chart with optional volatility overlay.
+
+    Same as create_main_chart but with 4 rows (adding vol subplot).
+
+    Args:
+        data: OHLCV DataFrame with indicators and vol data
+        sr_result: Support/resistance analysis result
+        trade_setup: Optional trade setup to overlay
+        title: Chart title
+        show_vol: Whether to show volatility subplot
+
+    Returns:
+        Plotly Figure object
+    """
+    if show_vol and 'rv_1m' in data.columns:
+        fig = make_subplots(
+            rows=4, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.5, 0.15, 0.15, 0.2],
+            subplot_titles=(title, 'RSI', 'MACD', '1M Realized Vol')
+        )
+        vol_row = 4
+    else:
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.6, 0.2, 0.2],
+            subplot_titles=(title, 'RSI', 'MACD')
+        )
+        vol_row = None
+
+    # Candlestick chart
+    fig.add_trace(
+        go.Candlestick(
+            x=data.index,
+            open=data['Open'],
+            high=data['High'],
+            low=data['Low'],
+            close=data['Close'],
+            name='Price',
+            increasing_line_color='#26a69a',
+            decreasing_line_color='#ef5350',
+        ),
+        row=1, col=1
+    )
+
+    # SMAs
+    if 'sma_20' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['sma_20'],
+                mode='lines', name='SMA 20',
+                line=dict(color='#ffeb3b', width=1),
+            ),
+            row=1, col=1
+        )
+    if 'sma_50' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['sma_50'],
+                mode='lines', name='SMA 50',
+                line=dict(color='#2196f3', width=1),
+            ),
+            row=1, col=1
+        )
+
+    # EMA 200 (if available)
+    if 'ema_200' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['ema_200'],
+                mode='lines', name='EMA 200',
+                line=dict(color='#e91e63', width=1, dash='dot'),
+            ),
+            row=1, col=1
+        )
+
+    # Bollinger Bands
+    if 'bb_upper' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['bb_upper'],
+                mode='lines', name='BB Upper',
+                line=dict(color='rgba(128,128,128,0.4)', dash='dash', width=1),
+                showlegend=False,
+            ),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['bb_lower'],
+                mode='lines', name='BB Lower',
+                line=dict(color='rgba(128,128,128,0.4)', dash='dash', width=1),
+                fill='tonexty', fillcolor='rgba(128,128,128,0.1)',
+                showlegend=False,
+            ),
+            row=1, col=1
+        )
+
+    # Support zones (green)
+    for i, zone in enumerate(sr_result.supports[:3]):
+        fig.add_hrect(
+            y0=zone.lower_bound, y1=zone.upper_bound,
+            fillcolor="rgba(76,175,80,0.15)",
+            line=dict(color="rgba(76,175,80,0.6)", width=1),
+            row=1, col=1,
+        )
+        fig.add_annotation(
+            x=data.index[-1],
+            y=zone.center,
+            text=f"S{i+1}: {zone.center:.5f}",
+            showarrow=False,
+            xanchor="left",
+            font=dict(color="green", size=10),
+            row=1, col=1,
+        )
+
+    # Resistance zones (red)
+    for i, zone in enumerate(sr_result.resistances[:3]):
+        fig.add_hrect(
+            y0=zone.lower_bound, y1=zone.upper_bound,
+            fillcolor="rgba(244,67,54,0.15)",
+            line=dict(color="rgba(244,67,54,0.6)", width=1),
+            row=1, col=1,
+        )
+        fig.add_annotation(
+            x=data.index[-1],
+            y=zone.center,
+            text=f"R{i+1}: {zone.center:.5f}",
+            showarrow=False,
+            xanchor="left",
+            font=dict(color="red", size=10),
+            row=1, col=1,
+        )
+
+    # Trade setup visualization
+    if trade_setup and trade_setup.bias != Bias.NEUTRAL:
+        fig.add_hrect(
+            y0=trade_setup.entry_zone_low,
+            y1=trade_setup.entry_zone_high,
+            fillcolor="rgba(33,150,243,0.2)",
+            line=dict(color="rgba(33,150,243,0.8)", width=2),
+            row=1, col=1,
+        )
+        fig.add_hline(
+            y=trade_setup.stop_loss,
+            line=dict(color="red", width=2, dash="dash"),
+            row=1, col=1,
+        )
+        fig.add_hline(
+            y=trade_setup.target_1,
+            line=dict(color="green", width=2, dash="dash"),
+            row=1, col=1,
+        )
+
+    # RSI subplot
+    if 'rsi' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['rsi'],
+                mode='lines', name='RSI',
+                line=dict(color='#9c27b0', width=1),
+            ),
+            row=2, col=1
+        )
+        fig.add_hline(y=70, line=dict(color='rgba(244,67,54,0.5)', dash='dash', width=1), row=2, col=1)
+        fig.add_hline(y=30, line=dict(color='rgba(76,175,80,0.5)', dash='dash', width=1), row=2, col=1)
+        fig.add_hrect(y0=30, y1=70, fillcolor="rgba(128,128,128,0.1)", line_width=0, row=2, col=1)
+
+    # MACD subplot
+    if 'macd' in data.columns and 'macd_signal' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['macd'],
+                mode='lines', name='MACD',
+                line=dict(color='#2196f3', width=1),
+            ),
+            row=3, col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['macd_signal'],
+                mode='lines', name='Signal',
+                line=dict(color='#ff9800', width=1),
+            ),
+            row=3, col=1
+        )
+
+        if 'macd_histogram' in data.columns:
+            colors = ['#26a69a' if v >= 0 else '#ef5350' for v in data['macd_histogram']]
+            fig.add_trace(
+                go.Bar(
+                    x=data.index, y=data['macd_histogram'],
+                    name='Histogram',
+                    marker_color=colors,
+                    opacity=0.5,
+                ),
+                row=3, col=1
+            )
+
+        fig.add_hline(y=0, line=dict(color='rgba(255,255,255,0.3)', width=1), row=3, col=1)
+
+    # Volatility subplot
+    if vol_row and 'rv_1m' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data['rv_1m'],
+                mode='lines',
+                name='1M Vol',
+                line=dict(color='#9c27b0', width=1.5),
+                fill='tozeroy',
+                fillcolor='rgba(156, 39, 176, 0.2)',
+            ),
+            row=vol_row, col=1
+        )
+
+        # Add mean line
+        mean_vol = data['rv_1m'].mean()
+        fig.add_hline(
+            y=mean_vol,
+            line=dict(color='rgba(255,255,255,0.5)', dash='dot', width=1),
+            row=vol_row, col=1
+        )
+
+    # Layout
+    height = 900 if vol_row else 800
+    fig.update_layout(
+        height=height,
+        xaxis_rangeslider_visible=False,
+        template='plotly_dark',
+        showlegend=True,
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1,
+            font=dict(size=10),
+        ),
+        margin=dict(l=60, r=120, t=60, b=40),
+    )
+
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(range=[0, 100], row=2, col=1)
+
+    if vol_row:
+        fig.update_yaxes(title_text="Vol %", row=vol_row, col=1)
+
+    return fig
+
+
+def create_iv_chart(
+    iv_df: pd.DataFrame,
+    selected_tenor: str = '1M',
+    title: str = "Implied Volatility"
+) -> go.Figure:
+    """
+    Create implied volatility time series chart for selected tenor.
+
+    Args:
+        iv_df: DataFrame with IV columns (IV 1W, IV 1M, etc.)
+        selected_tenor: Tenor to highlight ('1W', '1M', '3M', '6M', '1Y')
+        title: Chart title
+
+    Returns:
+        Plotly Figure object
+    """
+    fig = go.Figure()
+
+    # Color mapping for tenors
+    tenor_colors = {
+        '1W': '#ef5350',   # Red - short term
+        '1M': '#9c27b0',   # Purple - main focus
+        '3M': '#2196f3',   # Blue
+        '6M': '#ff9800',   # Orange
+        '1Y': '#4caf50',   # Green - long term
+    }
+
+    # Plot all tenors, highlighting the selected one
+    for tenor in IV_TENORS:
+        col_name = f'IV {tenor}'
+        if col_name not in iv_df.columns:
+            continue
+
+        is_selected = tenor == selected_tenor
+        fig.add_trace(
+            go.Scatter(
+                x=iv_df.index,
+                y=iv_df[col_name],
+                mode='lines',
+                name=tenor,
+                line=dict(
+                    color=tenor_colors.get(tenor, '#9e9e9e'),
+                    width=2.5 if is_selected else 1,
+                    dash=None if is_selected else 'dot'
+                ),
+                opacity=1.0 if is_selected else 0.5,
+                fill='tozeroy' if is_selected else None,
+                fillcolor=f"rgba{tuple(list(int(tenor_colors.get(tenor, '#9e9e9e').lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) + [0.1])}" if is_selected else None,
+            )
+        )
+
+    # Add mean line for selected tenor
+    selected_col = f'IV {selected_tenor}'
+    if selected_col in iv_df.columns:
+        mean_iv = iv_df[selected_col].mean()
+        fig.add_hline(
+            y=mean_iv,
+            line=dict(color='rgba(255,255,255,0.5)', dash='dot', width=1),
+            annotation_text=f"Mean: {mean_iv:.1f}%",
+            annotation_position="right"
+        )
+
+    fig.update_layout(
+        title=title,
+        height=400,
+        template='plotly_dark',
+        showlegend=True,
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1,
+            font=dict(size=10),
+        ),
+        margin=dict(l=60, r=60, t=60, b=40),
+        yaxis_title="Implied Volatility %",
+        xaxis_title="Date",
+    )
+
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+
+    return fig
+
+
+def create_iv_rv_comparison_chart(
+    data: pd.DataFrame,
+    iv_tenor: str = '1M',
+    title: str = "IV vs RV Comparison"
+) -> go.Figure:
+    """
+    Create chart comparing implied vs realized volatility.
+
+    Shows IV for selected tenor, RV (1M), and the spread.
+
+    Args:
+        data: DataFrame with IV columns and rv_1m column
+        iv_tenor: IV tenor to compare ('1W', '1M', '3M', '6M', '1Y')
+        title: Chart title
+
+    Returns:
+        Plotly Figure object
+    """
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.7, 0.3],
+        subplot_titles=(title, 'IV-RV Spread (Vol Risk Premium)')
+    )
+
+    iv_col = f'iv_{iv_tenor}'
+
+    # IV time series
+    if iv_col in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data[iv_col],
+                mode='lines',
+                name=f'IV {iv_tenor}',
+                line=dict(color='#9c27b0', width=2),
+            ),
+            row=1, col=1
+        )
+
+    # RV time series
+    if 'rv_1m' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data['rv_1m'],
+                mode='lines',
+                name='RV 1M',
+                line=dict(color='#2196f3', width=2),
+            ),
+            row=1, col=1
+        )
+
+    # Calculate and plot spread
+    if iv_col in data.columns and 'rv_1m' in data.columns:
+        spread = data[iv_col] - data['rv_1m']
+
+        # Color bars based on positive/negative spread
+        colors = ['#26a69a' if s >= 0 else '#ef5350' for s in spread.fillna(0)]
+
+        fig.add_trace(
+            go.Bar(
+                x=data.index,
+                y=spread,
+                name='IV-RV Spread',
+                marker_color=colors,
+                opacity=0.7,
+            ),
+            row=2, col=1
+        )
+
+        # Zero line
+        fig.add_hline(y=0, line=dict(color='rgba(255,255,255,0.5)', width=1), row=2, col=1)
+
+        # Add annotations for spread interpretation
+        mean_spread = spread.mean()
+        fig.add_hline(
+            y=mean_spread,
+            line=dict(color='rgba(255,255,255,0.3)', dash='dot', width=1),
+            annotation_text=f"Mean: {mean_spread:.2f}",
+            annotation_position="right",
+            row=2, col=1
+        )
+
+    fig.update_layout(
+        height=500,
+        template='plotly_dark',
+        showlegend=True,
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1,
+            font=dict(size=10),
+        ),
+        margin=dict(l=60, r=60, t=60, b=40),
+    )
+
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(title_text="Volatility %", row=1, col=1)
+    fig.update_yaxes(title_text="Spread %", row=2, col=1)
+
+    return fig
+
+
+def create_term_structure_chart(
+    term_structure: dict,
+    current_rv: Optional[float] = None,
+    title: str = "Vol Term Structure"
+) -> go.Figure:
+    """
+    Create volatility term structure chart (IV curve across tenors).
+
+    Args:
+        term_structure: Dict mapping tenor -> IV value
+        current_rv: Optional current realized vol for comparison
+        title: Chart title
+
+    Returns:
+        Plotly Figure object
+    """
+    # Convert tenors to days for x-axis
+    tenors = list(term_structure.keys())
+    days = [TENOR_DAYS.get(t, 30) for t in tenors]
+    ivs = [term_structure[t] for t in tenors]
+
+    fig = go.Figure()
+
+    # IV term structure line
+    fig.add_trace(
+        go.Scatter(
+            x=days,
+            y=ivs,
+            mode='lines+markers',
+            name='Implied Vol',
+            line=dict(color='#9c27b0', width=3),
+            marker=dict(size=12, color='#9c27b0'),
+        )
+    )
+
+    # Add labels for each tenor point
+    for i, (tenor, iv) in enumerate(zip(tenors, ivs)):
+        fig.add_annotation(
+            x=days[i],
+            y=iv,
+            text=f"{tenor}<br>{iv:.1f}%",
+            showarrow=False,
+            yshift=25,
+            font=dict(size=10, color='white'),
+        )
+
+    # Add RV reference line if provided
+    if current_rv is not None:
+        fig.add_hline(
+            y=current_rv,
+            line=dict(color='#2196f3', width=2, dash='dash'),
+            annotation_text=f"RV 1M: {current_rv:.1f}%",
+            annotation_position="right"
+        )
+
+    # Determine if curve is inverted
+    is_inverted = ivs[0] > ivs[-1] if len(ivs) >= 2 else False
+
+    # Add shading between short and long term
+    if len(ivs) >= 2:
+        fill_color = 'rgba(239,83,80,0.1)' if is_inverted else 'rgba(76,175,80,0.1)'
+        fig.add_trace(
+            go.Scatter(
+                x=days,
+                y=ivs,
+                mode='none',
+                fill='tozeroy',
+                fillcolor=fill_color,
+                showlegend=False,
+            )
+        )
+
+    fig.update_layout(
+        title=dict(
+            text=title + (" (INVERTED)" if is_inverted else " (Normal)"),
+            font=dict(color='#ef5350' if is_inverted else 'white')
+        ),
+        height=300,
+        template='plotly_dark',
+        showlegend=True,
+        margin=dict(l=60, r=60, t=60, b=40),
+        xaxis_title="Days to Expiry",
+        yaxis_title="Implied Volatility %",
+        xaxis=dict(
+            tickmode='array',
+            tickvals=days,
+            ticktext=tenors,
+        ),
+    )
+
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+
+    return fig
+
+
+def create_iv_rv_overlay_chart(
+    data: pd.DataFrame,
+    iv_tenor: str = '1M',
+    title: str = "Price with IV/RV Overlay"
+) -> go.Figure:
+    """
+    Create price chart with IV and RV overlaid on secondary axis.
+
+    Args:
+        data: DataFrame with OHLC, IV, and RV columns
+        iv_tenor: IV tenor to display
+        title: Chart title
+
+    Returns:
+        Plotly Figure object
+    """
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.6, 0.4],
+        subplot_titles=(title, f'IV {iv_tenor} vs RV 1M'),
+        specs=[[{"secondary_y": False}], [{"secondary_y": True}]]
+    )
+
+    # Price candlestick
+    fig.add_trace(
+        go.Candlestick(
+            x=data.index,
+            open=data['Open'],
+            high=data['High'],
+            low=data['Low'],
+            close=data['Close'],
+            name='Price',
+            increasing_line_color='#26a69a',
+            decreasing_line_color='#ef5350',
+        ),
+        row=1, col=1
+    )
+
+    iv_col = f'iv_{iv_tenor}'
+
+    # IV on vol subplot
+    if iv_col in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data[iv_col],
+                mode='lines',
+                name=f'IV {iv_tenor}',
+                line=dict(color='#9c27b0', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(156, 39, 176, 0.1)',
+            ),
+            row=2, col=1
+        )
+
+    # RV on same subplot
+    if 'rv_1m' in data.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=data.index,
+                y=data['rv_1m'],
+                mode='lines',
+                name='RV 1M',
+                line=dict(color='#2196f3', width=2),
+            ),
+            row=2, col=1
+        )
+
+    fig.update_layout(
+        height=600,
+        xaxis_rangeslider_visible=False,
+        template='plotly_dark',
+        showlegend=True,
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1,
+            font=dict(size=10),
+        ),
+        margin=dict(l=60, r=60, t=60, b=40),
+    )
+
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)')
+    fig.update_yaxes(title_text="Volatility %", row=2, col=1)
 
     return fig
