@@ -9,7 +9,8 @@ from core.indicators import calculate_all_indicators, check_ema_200_trend_confir
 from core.support_resistance import analyze_support_resistance
 from core.regime import (
     detect_regime, analyze_mtf_context, TrendDirection,
-    create_regime_state, should_filter_signal, count_recent_regime_changes
+    create_regime_state, should_filter_signal, count_recent_regime_changes,
+    get_previous_regime_before_change
 )
 from core.signals import (
     generate_signals_with_settings, generate_ema_200_signal,
@@ -213,6 +214,10 @@ def main():
         regime_changes = count_recent_regime_changes(daily_data, lookback=20)
         if regime_changes > 0:
             regime_state.regime_changed = True
+            # Get the previous regime before the change
+            previous_regime = get_previous_regime_before_change(daily_data, lookback=20)
+            if previous_regime:
+                regime_state.previous_regime = previous_regime
 
         for signal in signals:
             if not should_filter_signal(signal.direction, regime_state, settings.signal_filters):

@@ -325,6 +325,8 @@ def should_filter_signal(
         is_opposite = True
 
     if is_opposite and regime_state.opposite_signals_since_change < signals_to_ignore:
+        # Increment counter so we only filter N signals, not all of them
+        regime_state.opposite_signals_since_change += 1
         return True
 
     return False
@@ -387,6 +389,38 @@ def detect_regime_history(
             regimes.append(TrendDirection.RANGING)
 
     return regimes
+
+
+def get_previous_regime_before_change(
+    data: pd.DataFrame,
+    lookback: int = 20
+) -> Optional[TrendDirection]:
+    """
+    Find the previous regime before the most recent regime change.
+
+    Scans backwards through the regime history to find what the regime was
+    before it changed to the current state.
+
+    Args:
+        data: DataFrame with indicators
+        lookback: Number of bars to look back
+
+    Returns:
+        Previous TrendDirection before the change, or None if no change found
+    """
+    regimes = detect_regime_history(data, lookback)
+
+    if len(regimes) < 2:
+        return None
+
+    current = regimes[-1]
+
+    # Scan backwards to find the first different regime
+    for i in range(len(regimes) - 2, -1, -1):
+        if regimes[i] != current:
+            return regimes[i]
+
+    return None
 
 
 def count_recent_regime_changes(

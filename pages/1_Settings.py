@@ -150,11 +150,13 @@ def main():
                     value=settings.exit_strategy.swing_lookback,
                     help="Bars to look back for swing high/low"
                 )
-                use_hybrid = st.checkbox(
-                    "Hybrid: max(swing, ATR x mult)",
-                    value=settings.exit_strategy.use_swing_atr_hybrid,
-                    help="Use the greater of swing level or ATR-based stop"
-                )
+
+            # Hybrid option available for both trailing_atr and swing_based
+            use_hybrid = st.checkbox(
+                "Hybrid: max(swing, ATR x mult)",
+                value=settings.exit_strategy.use_swing_atr_hybrid,
+                help="Use the greater of swing level or ATR-based stop"
+            ) if exit_strategy in ["trailing_atr", "swing_based"] else settings.exit_strategy.use_swing_atr_hybrid
 
     # ==================== RIGHT COLUMN ====================
     with right_col:
@@ -286,7 +288,8 @@ def main():
                 exit_strategy=exit_strategy,
                 use_fixed_targets=(exit_strategy == "fixed_targets"),
                 trailing_atr_multiplier=trailing_atr_mult,
-                swing_lookback=swing_lookback
+                swing_lookback=swing_lookback,
+                use_swing_atr_hybrid=use_hybrid
             ),
             signal_filters=SignalFilterSettings(
                 require_mtf_alignment=require_mtf,
@@ -317,7 +320,8 @@ def main():
             "exit_strategy": {
                 "method": settings.exit_strategy.exit_strategy,
                 "trailing_atr_multiplier": settings.exit_strategy.trailing_atr_multiplier,
-                "swing_lookback": settings.exit_strategy.swing_lookback
+                "swing_lookback": settings.exit_strategy.swing_lookback,
+                "use_swing_atr_hybrid": settings.exit_strategy.use_swing_atr_hybrid
             },
             "signal_filters": {
                 "require_mtf_alignment": settings.signal_filters.require_mtf_alignment,
