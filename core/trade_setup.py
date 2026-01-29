@@ -310,20 +310,20 @@ def calculate_swing_based_stop(
         # Stop below recent swing low
         swing_stop = float(recent['Low'].min())
 
-        # Hybrid: use max of swing low and ATR-based stop
+        # Hybrid: use max of swing low and ATR-based stop (tighter = closer to entry)
         if atr:
             atr_stop = current_price - (atr * atr_multiplier)
-            return min(swing_stop, atr_stop)  # Use the one that gives tighter stop
+            return max(swing_stop, atr_stop)  # Use the higher value for tighter stop
         return swing_stop
 
     else:  # short
         # Stop above recent swing high
         swing_stop = float(recent['High'].max())
 
-        # Hybrid: use min of swing high and ATR-based stop
+        # Hybrid: use min of swing high and ATR-based stop (tighter = closer to entry)
         if atr:
             atr_stop = current_price + (atr * atr_multiplier)
-            return max(swing_stop, atr_stop)  # Use the one that gives tighter stop
+            return min(swing_stop, atr_stop)  # Use the lower value for tighter stop
         return swing_stop
 
 
