@@ -20,9 +20,15 @@ from core.volatility import (
     analyze_volatility, calculate_vol_time_series,
     VolForecast, VolRegime
 )
+from core.implied_vol import (
+    get_latest_iv, get_all_tenors_df, merge_iv_with_price_data,
+    analyze_iv_vs_rv, get_iv_time_series, IV_TENORS
+)
 from visualization.charts import (
     create_main_chart, create_mtf_summary_chart,
-    create_main_chart_with_vol, create_vol_chart, create_vol_gauge
+    create_main_chart_with_vol, create_vol_chart, create_vol_gauge,
+    create_iv_chart, create_iv_rv_comparison_chart, create_term_structure_chart,
+    create_iv_rv_overlay_chart
 )
 from utils.forex_utils import (
     get_pip_info, format_price, format_pip_distance,
@@ -113,6 +119,21 @@ def main():
         show_vol_analysis = st.checkbox("Show Options/Vol View", value=True)
         show_signals = st.checkbox("Show Signal Details", value=False)
         show_raw_data = st.checkbox("Show Raw Data", value=False)
+
+        # IV Tenor selection (only shown when vol view is enabled)
+        if show_vol_analysis:
+            st.divider()
+            st.subheader("Implied Vol")
+            selected_tenor = st.selectbox(
+                "IV Tenor",
+                options=IV_TENORS,
+                index=1,  # Default to 1M
+                help="Select implied vol tenor for comparison"
+            )
+            show_iv_rv_comparison = st.checkbox("Show IV vs RV", value=True)
+        else:
+            selected_tenor = '1M'
+            show_iv_rv_comparison = False
 
     # Get pip configuration
     pip_decimal, round_step = get_pip_info(symbol)
@@ -217,6 +238,26 @@ def main():
     # Calculate vol time series for charting
     daily_data_with_vol = calculate_vol_time_series(daily_data)
 
+    # ========== Implied Vol Data ==========
+    iv_data = get_latest_iv(symbol)
+    iv_time_series_df = get_all_tenors_df(symbol)
+    iv_analysis = None
+
+    if iv_data and vol_analysis:
+        # Merge IV with price data for combined charting
+        daily_data_with_vol = merge_iv_with_price_data(daily_data_with_vol, symbol)
+
+        # Get IV history for percentile calculation
+        iv_history = get_iv_time_series(symbol, selected_tenor)
+
+        # Analyze IV vs RV
+        iv_analysis = analyze_iv_vs_rv(
+            iv_data=iv_data,
+            rv_1m=vol_analysis.metrics.rv_1m,
+            selected_tenor=selected_tenor,
+            iv_history=iv_history
+        )
+
     # ========== Generate trade setup ==========
     atr = float(daily_data['atr'].iloc[-1]) if 'atr' in daily_data.columns else 0.001
     trade_setup = generate_trade_setup(
@@ -307,7 +348,12 @@ def main():
                 value=f"{vol_emoji} {vol_regime_label}",
                 delta=f"{vol_analysis.metrics.vol_change_5d:+.1f}% (5d)"
             )
-            st.caption(f"1M Vol: {vol_analysis.metrics.rv_1m:.1f}% | {vol_analysis.metrics.rv_percentile:.0f}%ile")
+            # Show RV with IV comparison if available
+            if iv_analysis:
+                spread_str = f"IV-RV: {iv_analysis.iv_rv_spread:+.1f}%"
+                st.caption(f"RV: {vol_analysis.metrics.rv_1m:.1f}% | IV({selected_tenor}): {iv_analysis.current_iv:.1f}% | {spread_str}")
+            else:
+                st.caption(f"1M Vol: {vol_analysis.metrics.rv_1m:.1f}% | {vol_analysis.metrics.rv_percentile:.0f}%ile")
 
     # Show filter warnings
     if ema_200_warning or mtf_warning:
@@ -441,6 +487,93 @@ def main():
             title=f"{symbol.replace('=X', '')} 1M Realized Volatility"
         )
         st.plotly_chart(vol_chart, use_container_width=True)
+
+        # ========== IMPLIED VOL SECTION ==========
+        if iv_data and show_iv_rv_comparison:
+            st.divider()
+            st.subheader(f"Implied Volatility Analysis ({selected_tenor})")
+
+            # IV metrics row
+            iv_col1, iv_col2, iv_col3 = st.columns([1, 1, 2])
+
+            with iv_col1:
+                st.markdown("**IV Term Structure**")
+                term_structure = iv_data.get_term_structure()
+                for tenor, iv_val in term_structure.items():
+                    highlight = "**" if tenor == selected_tenor else ""
+                    st.write(f"{highlight}{tenor}: {iv_val:.2f}%{highlight}")
+
+                if iv_data.is_inverted():
+                    st.warning("INVERTED CURVE")
+                else:
+                    st.caption(f"Slope (1Y-1M): {iv_data.get_slope():+.2f}%")
+
+            with iv_col2:
+                st.markdown("**IV vs RV Analysis**")
+                if iv_analysis:
+                    st.write(f"IV ({selected_tenor}): **{iv_analysis.current_iv:.2f}%**")
+                    st.write(f"RV (1M): **{iv_analysis.current_rv:.2f}%**")
+
+                    # Color code the spread
+                    spread = iv_analysis.iv_rv_spread
+                    if spread > 2:
+                        spread_color = "red"
+                        spread_label = "IV Expensive"
+                    elif spread < -2:
+                        spread_color = "green"
+                        spread_label = "IV Cheap"
+                    else:
+                        spread_color = "gray"
+                        spread_label = "Fair Value"
+
+                    st.markdown(f"Spread: **:{spread_color}[{spread:+.2f}%]** ({spread_label})")
+                    st.write(f"IV Percentile: **{iv_analysis.iv_percentile:.0f}th**")
+
+            with iv_col3:
+                st.markdown("**Vol Trading Recommendation**")
+                if iv_analysis:
+                    # Color-code recommendation
+                    rec = iv_analysis.recommendation
+                    if "SELL VOL" in rec:
+                        st.error(rec)
+                    elif "BUY VOL" in rec:
+                        st.success(rec)
+                    elif "CAUTION" in rec:
+                        st.warning(rec)
+                    else:
+                        st.info(rec)
+
+            # Charts row
+            chart_col1, chart_col2 = st.columns(2)
+
+            with chart_col1:
+                # Term structure chart
+                if iv_data:
+                    term_chart = create_term_structure_chart(
+                        iv_data.get_term_structure(),
+                        current_rv=vol_analysis.metrics.rv_1m,
+                        title=f"{symbol.replace('=X', '')} Vol Term Structure"
+                    )
+                    st.plotly_chart(term_chart, use_container_width=True)
+
+            with chart_col2:
+                # IV time series chart
+                if iv_time_series_df is not None and not iv_time_series_df.empty:
+                    iv_chart = create_iv_chart(
+                        iv_time_series_df.tail(252),
+                        selected_tenor=selected_tenor,
+                        title=f"{symbol.replace('=X', '')} Implied Vol ({selected_tenor})"
+                    )
+                    st.plotly_chart(iv_chart, use_container_width=True)
+
+            # IV vs RV comparison chart (full width)
+            st.markdown("**IV vs RV Comparison**")
+            iv_rv_chart = create_iv_rv_comparison_chart(
+                daily_data_with_vol.tail(252),
+                iv_tenor=selected_tenor,
+                title=f"{symbol.replace('=X', '')} IV {selected_tenor} vs RV 1M"
+            )
+            st.plotly_chart(iv_rv_chart, use_container_width=True)
 
     # Signal Details (optional)
     if show_signals:
