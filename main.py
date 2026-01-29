@@ -124,7 +124,7 @@ def main():
 
         st.subheader("Strategy")
         display_active_settings_summary(settings)
-        st.page_link("pages/1_Settings.py", label="Configure Strategy", icon="Settings")
+        st.page_link("pages/1_Settings.py", label="Configure Strategy", icon="⚙️")
 
         st.divider()
 
