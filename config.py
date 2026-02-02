@@ -52,7 +52,7 @@ REGIME_CONFIG = {
     "atr_lookback": 100,            # Bars for ATR percentile calculation
 }
 
-# Confluence Weights for S/R Strength
+# Confluence Weights for S/R Strength (basic analysis)
 CONFLUENCE_WEIGHTS = {
     "swing_level": 2.0,
     "volume_level": 1.5,
@@ -60,6 +60,46 @@ CONFLUENCE_WEIGHTS = {
     "round_number": 1.0,
     "mtf_alignment": 2.0,
     "regime_favorable": 1.5,
+}
+
+# Professional S/R Scoring Configuration (for SR Analysis page)
+SR_SCORING_CONFIG = {
+    # Timeframe significance (0-3 points)
+    "tf_weekly": 3.0,
+    "tf_daily": 2.0,
+    "tf_4h": 1.0,
+    "tf_1h": 0.5,
+
+    # Structure type (0-2 points each)
+    "swing_high_low": 2.0,
+    "role_flip": 2.0,       # Support became resistance or vice versa
+    "volume_cluster": 1.0,
+    "bollinger_touch": 0.5,
+
+    # Reaction quality (based on recent touches)
+    "strong_rejection": 2.0,   # Long wick, closed away from level
+    "mild_rejection": 1.0,     # Some wick, closed near level
+    "acceptance": -1.0,        # Closed through level
+
+    # Recency (how recently the level was tested)
+    "recent_test": 1.0,        # Tested within 20 bars
+    "medium_test": 0.5,        # Tested 20-60 bars ago
+    "old_test": 0.0,           # Not tested recently
+
+    # Touch pattern / liquidity phase (can be negative)
+    "discovery_phase": 1.5,    # 1-3 quality tests - level gaining strength
+    "established_phase": 1.0,  # Proven but not over-tested
+    "depletion_phase": -0.5,   # Many tests, liquidity being consumed
+    "exhausted_phase": -1.5,   # Very high break risk
+
+    # Approach pattern
+    "compression": -1.0,       # Higher lows into resistance = break risk
+    "impulse": 0.5,            # Strong move toward level
+
+    # Confluence bonuses
+    "round_number": 1.0,       # Psychological level
+    "multi_source": 0.5,       # Per additional detection source
+    "mtf_confluence": 1.5,     # Level exists on multiple timeframes
 }
 
 # Trade Setup Parameters
