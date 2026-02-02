@@ -10,7 +10,9 @@ from core.support_resistance import analyze_support_resistance
 from core.regime import (
     detect_regime, analyze_mtf_context, TrendDirection,
     create_regime_state, should_filter_signal, count_recent_regime_changes,
-    get_previous_regime_before_change
+    get_previous_regime_before_change,
+    # ADX Regime Analysis
+    analyze_adx, get_rsi_interpretation, ADXRegime, ADXSlope
 )
 from core.signals import (
     generate_signals_with_settings, generate_ema_200_signal,
@@ -207,6 +209,9 @@ def main():
         mtf_data['4h']
     )
 
+    # ADX Regime Analysis (professional trading framework)
+    adx_analysis = analyze_adx(daily_data)
+
     # Generate signals
     indicator_dict = {
         'rsi': daily_indicators.rsi if daily_indicators else 50,
@@ -333,6 +338,100 @@ def main():
         else:
             bias_display = "⏸️ NEUTRAL"
         st.metric(label="Bias", value=bias_display)
+
+    st.divider()
+
+    # ========== ADX REGIME ANALYSIS (Professional Trading Framework) ==========
+    st.header("ADX Trend Regime Analysis")
+    st.caption("ADX is a 'style selector' - tells you HOW to trade, not WHAT to trade")
+
+    # ADX Metrics Row
+    adx_col1, adx_col2, adx_col3, adx_col4 = st.columns(4)
+
+    with adx_col1:
+        # ADX Value with slope indicator
+        slope_arrow = adx_analysis.slope_emoji
+        st.metric(
+            label="ADX Value",
+            value=f"{adx_analysis.adx:.1f} {slope_arrow}",
+            delta=f"{adx_analysis.slope_value:+.1f}/bar" if adx_analysis.slope_value != 0 else "flat",
+            delta_color="normal" if adx_analysis.slope == ADXSlope.RISING else "inverse" if adx_analysis.slope == ADXSlope.FALLING else "off"
+        )
+
+    with adx_col2:
+        # Regime classification
+        regime_labels = {
+            ADXRegime.RANGE_MEAN_REVERSION: "Range (Mean Revert)",
+            ADXRegime.TRANSITION_BREAKOUT: "Transition (Breakout)",
+            ADXRegime.TREND_CONTINUATION: "Trend (Continuation)",
+        }
+        regime_colors = {
+            ADXRegime.RANGE_MEAN_REVERSION: "blue",
+            ADXRegime.TRANSITION_BREAKOUT: "orange",
+            ADXRegime.TREND_CONTINUATION: "green",
+        }
+        regime_label = regime_labels.get(adx_analysis.regime, "Unknown")
+        regime_color = regime_colors.get(adx_analysis.regime, "gray")
+        st.metric(label="Trading Regime", value=f"{adx_analysis.regime_emoji} {regime_label}")
+
+    with adx_col3:
+        # Direction from DI
+        di_diff = adx_analysis.plus_di - adx_analysis.minus_di
+        if adx_analysis.di_direction == "bullish":
+            di_display = f"+DI > -DI ({di_diff:+.1f})"
+            di_emoji = "📈"
+        elif adx_analysis.di_direction == "bearish":
+            di_display = f"-DI > +DI ({di_diff:+.1f})"
+            di_emoji = "📉"
+        else:
+            di_display = "Neutral"
+            di_emoji = "↔"
+        st.metric(label="Directional Index", value=f"{di_emoji} {di_display}")
+
+    with adx_col4:
+        # S/R Behavior prediction
+        sr_emoji = {"wall": "🧱", "liquidity_target": "🎯", "transitioning": "⚡"}.get(adx_analysis.sr_behavior, "❓")
+        sr_labels = {"wall": "Wall (Hold)", "liquidity_target": "Break Target", "transitioning": "Uncertain"}.get(adx_analysis.sr_behavior, "Unknown")
+        st.metric(label="S/R Behavior", value=f"{sr_emoji} {sr_labels}")
+
+    # Trading Style Recommendation
+    st.subheader(f"Trading Style: {adx_analysis.trading_style}")
+
+    style_col1, style_col2 = st.columns([2, 1])
+
+    with style_col1:
+        st.markdown("**Current conditions favor:**")
+        for detail in adx_analysis.style_details[:4]:  # Show first 4 recommendations
+            if "WARNING" in detail or "Don't" in detail:
+                st.warning(f"• {detail}")
+            else:
+                st.write(f"• {detail}")
+
+    with style_col2:
+        # RSI interpretation based on ADX regime
+        rsi_value = daily_indicators.rsi if daily_indicators else 50
+        rsi_interp, rsi_detail = get_rsi_interpretation(rsi_value, adx_analysis)
+        st.markdown("**RSI in this regime:**")
+        st.write(f"RSI: {rsi_value:.1f}")
+
+        rsi_color = {"bullish": "green", "bearish": "red", "neutral": "gray", "warning": "orange", "caution": "yellow"}.get(rsi_interp, "gray")
+        st.markdown(f":{rsi_color}[{rsi_detail}]")
+
+    # Compression breakout alert
+    if adx_analysis.is_compression_breakout:
+        st.info(f"COMPRESSION BREAKOUT: ADX rising from recent low of {adx_analysis.recent_low:.1f} - trend regime 'turning on'")
+
+    # S/R behavior explanation
+    with st.expander("Understanding S/R Behavior in Current Regime"):
+        st.markdown(f"**{adx_analysis.sr_behavior_reason}**")
+        st.markdown("""
+        Key insight from professional trading:
+        - **Low ADX (Range)**: S/R levels act as walls - fades and bounces are reliable
+        - **Rising ADX (Transition)**: Watch for breakout acceptance before committing
+        - **High ADX (Trend)**: S/R levels are liquidity targets - breaks more likely
+
+        This answers: *"Is this level likely to reject... or get eaten through?"*
+        """)
 
     st.divider()
 

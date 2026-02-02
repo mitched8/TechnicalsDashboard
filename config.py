@@ -46,7 +46,12 @@ SR_LOOKBACK_OPTIONS = {
 
 # Regime Detection Parameters
 REGIME_CONFIG = {
+    # ADX thresholds for regime classification
+    "adx_low_threshold": 20,        # ADX below this = choppy/ranging
     "adx_trending_threshold": 25,   # ADX above this = trending
+    "adx_strong_threshold": 30,     # ADX above this = strong trend
+
+    # ATR volatility thresholds
     "atr_high_percentile": 75,      # ATR percentile for high volatility
     "atr_low_percentile": 25,       # ATR percentile for low volatility
     "atr_lookback": 100,            # Bars for ATR percentile calculation

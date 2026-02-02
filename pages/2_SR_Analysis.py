@@ -16,12 +16,14 @@ from plotly.subplots import make_subplots
 
 from config import CURRENCY_PAIRS, SR_LOOKBACK_OPTIONS
 from core.data_fetcher import fetch_multi_timeframe_data
-from core.indicators import add_indicators
+from core.indicators import calculate_all_indicators
 from core.sr_analysis import (
     analyze_multi_timeframe_sr, detect_enhanced_levels,
-    get_zone_trading_notes, EnhancedZone, LiquidityPhase,
+    get_zone_trading_notes, get_adx_aware_sr_behavior,
+    EnhancedZone, LiquidityPhase, SRBehavior,
     ApproachPattern, ZoneType, TIMEFRAME_WEIGHTS, SCORING_CONFIG
 )
+from core.regime import analyze_adx, ADXRegime, ADXSlope
 
 
 st.set_page_config(
@@ -87,9 +89,9 @@ def load_and_analyze(symbol: str, lookback_config: dict, pip_step: float):
     """Load data and perform S/R analysis."""
     data_dict = fetch_multi_timeframe_data(symbol, daily_period="2y")
 
-    # Add indicators to daily data for additional S/R detection
+    # Calculate indicators for daily data (includes ADX for regime analysis)
     if not data_dict["daily"].empty:
-        data_dict["daily"] = add_indicators(data_dict["daily"])
+        data_dict["daily"], _ = calculate_all_indicators(data_dict["daily"])
 
     # Perform analysis
     result = analyze_multi_timeframe_sr(data_dict, pip_step, lookback_config)
@@ -105,6 +107,11 @@ with st.spinner("Loading data and analyzing S/R levels..."):
 if sr_result.current_price == 0:
     st.error("No data available for analysis")
     st.stop()
+
+# Perform ADX analysis for S/R behavior prediction
+adx_analysis = None
+if not data_dict["daily"].empty and 'adx' in data_dict["daily"].columns:
+    adx_analysis = analyze_adx(data_dict["daily"])
 
 
 # ==============================================================================
@@ -153,6 +160,54 @@ if sr_result.compression_into_resistance:
 
 if sr_result.compression_into_support:
     st.warning("COMPRESSION ALERT: Lower highs forming into nearest support - elevated break probability")
+
+# ==============================================================================
+# ADX CONTEXT FOR S/R BEHAVIOR
+# ==============================================================================
+
+if adx_analysis:
+    st.header("ADX Context for S/R Levels")
+    st.caption("ADX determines if levels act as walls (hold) or liquidity targets (break)")
+
+    adx_col1, adx_col2, adx_col3 = st.columns(3)
+
+    with adx_col1:
+        slope_emoji = adx_analysis.slope_emoji
+        st.metric(
+            "ADX Value",
+            f"{adx_analysis.adx:.1f} {slope_emoji}",
+            f"Slope: {adx_analysis.slope.value}"
+        )
+
+    with adx_col2:
+        regime_labels = {
+            ADXRegime.RANGE_MEAN_REVERSION: "Range",
+            ADXRegime.TRANSITION_BREAKOUT: "Transition",
+            ADXRegime.TREND_CONTINUATION: "Trend",
+        }
+        st.metric(
+            "ADX Regime",
+            f"{adx_analysis.regime_emoji} {regime_labels.get(adx_analysis.regime, 'Unknown')}"
+        )
+
+    with adx_col3:
+        behavior_emoji = {"wall": "🧱", "liquidity_target": "🎯", "transitioning": "⚡"}.get(adx_analysis.sr_behavior, "❓")
+        behavior_label = {"wall": "Wall (Levels Hold)", "liquidity_target": "Liquidity Target (Breaks Likely)", "transitioning": "Uncertain"}.get(adx_analysis.sr_behavior, "Unknown")
+        st.metric("Expected S/R Behavior", f"{behavior_emoji} {behavior_label}")
+
+    # Behavior explanation
+    st.info(adx_analysis.sr_behavior_reason)
+
+    # Trading guidance based on regime
+    with st.expander("Trading Guidance for Current Regime", expanded=True):
+        st.markdown(f"**Regime: {adx_analysis.trading_style}**")
+        for detail in adx_analysis.style_details:
+            if "WARNING" in detail:
+                st.warning(f"• {detail}")
+            elif "S/R" in detail or "level" in detail.lower():
+                st.success(f"• {detail}")
+            else:
+                st.write(f"• {detail}")
 
 
 # ==============================================================================
@@ -265,7 +320,7 @@ st.header("Level Analysis")
 
 tab1, tab2, tab3 = st.tabs(["Resistance Levels", "Support Levels", "By Timeframe"])
 
-def display_zone_details(zone: EnhancedZone, pip_decimal: int):
+def display_zone_details(zone: EnhancedZone, pip_decimal: int, adx_analysis_data=None):
     """Display detailed information about a zone."""
 
     # Header with score badge
@@ -276,12 +331,23 @@ def display_zone_details(zone: EnhancedZone, pip_decimal: int):
         "Weak": "gray"
     }.get(zone.score_category, "gray")
 
-    col1, col2 = st.columns([3, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         price_fmt = f"{zone.center:.5f}" if pip_decimal == 4 else f"{zone.center:.3f}"
         st.markdown(f"### {price_fmt}")
     with col2:
         st.markdown(f"**Score:** :{score_color}[{zone.total_score:.1f}] ({zone.score_category})")
+    with col3:
+        # ADX-aware behavior prediction
+        if adx_analysis_data:
+            adx_sr = get_adx_aware_sr_behavior(
+                zone,
+                adx_analysis_data.adx,
+                adx_analysis_data.slope.value,
+                adx_analysis_data.regime.value
+            )
+            behavior_emoji = {"wall": "🧱", "target": "🎯", "transitioning": "⚡"}.get(adx_sr.expected_behavior.value, "❓")
+            st.markdown(f"**ADX Signal:** {behavior_emoji} {adx_sr.expected_behavior.value.title()}")
 
     # Key info
     info_col1, info_col2, info_col3 = st.columns(3)
@@ -329,7 +395,7 @@ def display_zone_details(zone: EnhancedZone, pip_decimal: int):
                 st.markdown(f"**{component}:** {score:+.1f}")
                 st.progress(bar_width / 100)
 
-    # Trading notes
+    # Trading notes (standard)
     notes = get_zone_trading_notes(zone, sr_result.current_price)
     if notes:
         with st.expander("Trading Notes", expanded=highlight_warnings):
@@ -340,6 +406,25 @@ def display_zone_details(zone: EnhancedZone, pip_decimal: int):
                     st.info(note)
                 else:
                     st.write(f"- {note}")
+
+    # ADX-aware trading notes
+    if adx_analysis_data:
+        adx_sr = get_adx_aware_sr_behavior(
+            zone,
+            adx_analysis_data.adx,
+            adx_analysis_data.slope.value,
+            adx_analysis_data.regime.value
+        )
+        with st.expander(f"ADX-Aware Analysis ({adx_sr.confidence} confidence)", expanded=False):
+            st.markdown(f"**{adx_sr.behavior_reason}**")
+            st.markdown("**Trading notes based on current ADX regime:**")
+            for note in adx_sr.trading_notes:
+                if "WARNING" in note or "break" in note.lower():
+                    st.warning(f"• {note}")
+                elif "fade" in note.lower() or "hold" in note.lower():
+                    st.success(f"• {note}")
+                else:
+                    st.write(f"• {note}")
 
     # Touch details
     if show_touch_details and zone.touches:
@@ -370,7 +455,7 @@ with tab1:
 
     if resistances:
         for zone in sorted(resistances, key=lambda z: z.total_score, reverse=True):
-            display_zone_details(zone, pair_config.pip_decimal)
+            display_zone_details(zone, pair_config.pip_decimal, adx_analysis)
     else:
         st.info("No resistance levels match the current filters")
 
@@ -381,7 +466,7 @@ with tab2:
 
     if supports:
         for zone in sorted(supports, key=lambda z: z.total_score, reverse=True):
-            display_zone_details(zone, pair_config.pip_decimal)
+            display_zone_details(zone, pair_config.pip_decimal, adx_analysis)
     else:
         st.info("No support levels match the current filters")
 
@@ -544,4 +629,52 @@ with st.expander("Understanding S/R Analysis"):
     - **Touch Pattern:** Discovery (+1.5), Established (+1), Depletion (-0.5), Exhausted (-1.5)
     - **Approach:** Compression (-1), Impulse (+0.5)
     - **Confluence:** Round number (+1), Multi-source (+0.5 each), MTF (+1.5)
+
+    ---
+
+    ### ADX and S/R Behavior (Professional Framework)
+
+    ADX (Average Directional Index) is one of the best regime indicators in technical analysis.
+    It measures trend strength, not direction, and is crucial for S/R interpretation.
+
+    **Key Insight: ADX Slope > ADX Level**
+
+    Rising/falling tells you more about "now" than the absolute number. A rising ADX from
+    18 to 25 is more significant than a static ADX at 30.
+
+    **ADX Determines S/R Behavior:**
+
+    | ADX Regime | S/R Behavior | Trading Approach |
+    |------------|--------------|------------------|
+    | Low (<20) + Flat/Falling | **Wall** - levels hold | Fade range edges, stop-runs |
+    | Low but Rising | **Transitioning** | Wait for acceptance |
+    | High (>25) + Rising | **Liquidity Target** - breaks likely | Breakout-retest setups |
+    | High + Falling | **Exhausting** | Watch for reversal |
+
+    **ADX + S/R: The Professional Combo**
+
+    This answers the key question: *"Is this level likely to reject... or get eaten through?"*
+
+    - **Low ADX**: S/R tends to behave like a wall. Fades and bounces are more reliable.
+      Don't chase breakouts - they often fail in choppy conditions.
+
+    - **Rising ADX**: S/R behaves more like a liquidity target. Breakout + retest setups
+      work well. Don't fade aggressively - trend has a tailwind.
+
+    **Three ADX Regimes:**
+
+    1. **Range/Mean-Reversion** (ADX low and flat/falling)
+       - Fade range edges and stop-runs
+       - Tighter take-profits recommended
+       - RSI overbought/oversold extremes more reliable
+
+    2. **Transition/Breakout** (ADX low but turning up)
+       - Smaller position size - higher uncertainty
+       - Wait for acceptance (close + hold beyond level)
+       - Watch for ADX to continue rising to confirm
+
+    3. **Trend/Continuation** (ADX rising and elevated)
+       - Pullbacks into structure are higher probability
+       - Use runners with trailing stops
+       - RSI overbought is NOT a sell signal in uptrends
     """)

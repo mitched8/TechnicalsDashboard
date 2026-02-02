@@ -872,6 +872,120 @@ def analyze_multi_timeframe_sr(
     )
 
 
+class SRBehavior(Enum):
+    """Expected S/R behavior based on ADX regime."""
+    WALL = "wall"                  # Level likely to hold (low ADX)
+    LIQUIDITY_TARGET = "target"    # Level likely to break (high ADX)
+    TRANSITIONING = "transitioning"  # Uncertain behavior
+
+
+@dataclass
+class ADXAwareSRAnalysis:
+    """S/R level analysis adjusted for ADX regime."""
+    zone: EnhancedZone
+    expected_behavior: SRBehavior
+    behavior_reason: str
+    trading_notes: List[str]
+    confidence: str  # "high", "medium", "low"
+
+
+def get_adx_aware_sr_behavior(
+    zone: EnhancedZone,
+    adx: float,
+    adx_slope: str,  # "rising", "falling", "flat"
+    adx_regime: str,  # "range", "transition", "trend"
+) -> ADXAwareSRAnalysis:
+    """
+    Get ADX-adjusted S/R level behavior prediction.
+
+    Key insight from professional FX trading:
+    - Low ADX: S/R tends to behave like a wall (fades/bounces reliable)
+    - Rising ADX: S/R behaves more like a liquidity target (breaks + retests work)
+
+    This answers: "Is this level likely to reject... or get eaten through?"
+
+    Args:
+        zone: The enhanced S/R zone
+        adx: Current ADX value
+        adx_slope: ADX slope direction
+        adx_regime: ADX regime classification
+
+    Returns:
+        ADXAwareSRAnalysis with behavior prediction and trading notes
+    """
+    notes = []
+    confidence = "medium"
+
+    # Determine expected behavior based on ADX
+    if adx_regime == "range":
+        expected_behavior = SRBehavior.WALL
+        behavior_reason = f"ADX low ({adx:.1f}) - level likely to hold"
+        confidence = "high" if adx < 18 else "medium"
+        notes.extend([
+            "Fade setup: Play for rejection at this level",
+            "Stop-runs into this level are buyable/sellable",
+            "Tighter take-profits recommended",
+        ])
+
+    elif adx_regime == "transition":
+        expected_behavior = SRBehavior.TRANSITIONING
+        behavior_reason = f"ADX transitioning ({adx:.1f}) - uncertain behavior"
+        confidence = "low"
+        notes.extend([
+            "Wait for acceptance (close + hold beyond level)",
+            "Smaller size due to uncertainty",
+            "Watch for ADX to confirm direction",
+        ])
+
+    else:  # trend regime
+        if adx_slope == "rising":
+            expected_behavior = SRBehavior.LIQUIDITY_TARGET
+            behavior_reason = f"ADX high ({adx:.1f}) and rising - level is a break target"
+            confidence = "high"
+            notes.extend([
+                "Level is a liquidity pool - breaks more likely",
+                "Look for breakout + retest setups",
+                "Don't fade aggressively - trend has tailwind",
+            ])
+        elif adx_slope == "falling":
+            expected_behavior = SRBehavior.TRANSITIONING
+            behavior_reason = f"ADX falling from {adx:.1f} - trend may be exhausting"
+            confidence = "medium"
+            notes.extend([
+                "Trend losing momentum - be cautious",
+                "Watch for reversal at this level",
+                "Breaks may fail as trend exhausts",
+            ])
+        else:  # flat at elevated level
+            expected_behavior = SRBehavior.LIQUIDITY_TARGET
+            behavior_reason = f"ADX elevated ({adx:.1f}) - levels are liquidity pools"
+            confidence = "medium"
+            notes.extend([
+                "Established trend - continuation plays favored",
+                "Pullbacks to this level are potential entries",
+                "Watch for ADX to roll over for reversal signal",
+            ])
+
+    # Add zone-specific context
+    if zone.liquidity_phase == LiquidityPhase.EXHAUSTED:
+        notes.append("WARNING: Zone exhausted from multiple tests - break probability elevated")
+        if expected_behavior == SRBehavior.WALL:
+            confidence = "low"  # Downgrade confidence
+
+    if zone.approach_pattern == ApproachPattern.COMPRESSION:
+        notes.append("COMPRESSION into level - elevated break probability regardless of ADX")
+        expected_behavior = SRBehavior.LIQUIDITY_TARGET
+        confidence = "medium"
+
+    return ADXAwareSRAnalysis(
+        zone=zone,
+        expected_behavior=expected_behavior,
+        behavior_reason=behavior_reason,
+        trading_notes=notes,
+        confidence=confidence,
+    )
+
+
 def get_zone_trading_notes(zone: EnhancedZone, current_price: float) -> List[str]:
     """
     Generate trading notes/warnings for a zone.
