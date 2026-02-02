@@ -26,10 +26,39 @@ class PriceZone:
     strength: float  # Confluence score (higher = stronger)
     touches: int  # Number of price touches
     sources: List[str] = field(default_factory=list)  # Detection sources
+    # Age and recency metadata
+    first_detected_idx: int = 0  # Bar index when first detected
+    last_tested_idx: int = 0  # Bar index when last tested
+    age_bars: int = 0  # How many bars ago the level was first formed
+    days_since_test: int = 0  # Days since last test (for display)
 
     @property
     def width(self) -> float:
         return self.upper_bound - self.lower_bound
+
+    @property
+    def age_category(self) -> str:
+        """Categorize the age of this level for display."""
+        if self.age_bars < 20:
+            return "Recent"
+        elif self.age_bars < 60:
+            return "Medium"
+        elif self.age_bars < 120:
+            return "Established"
+        else:
+            return "Historic"
+
+    @property
+    def strength_category(self) -> str:
+        """Categorize the strength of this level for display."""
+        if self.strength >= 5.0:
+            return "Very Strong"
+        elif self.strength >= 3.5:
+            return "Strong"
+        elif self.strength >= 2.0:
+            return "Moderate"
+        else:
+            return "Weak"
 
 
 @dataclass
@@ -46,7 +75,7 @@ def detect_swing_levels(
     data: pd.DataFrame,
     window: int = 5,
     lookback: int = 100
-) -> List[Tuple[float, str]]:
+) -> List[Tuple[float, str, int]]:
     """
     Detect swing highs and lows using local extrema.
 
@@ -60,11 +89,12 @@ def detect_swing_levels(
         lookback: How many recent bars to analyze
 
     Returns:
-        List of (price_level, "swing_high" | "swing_low")
+        List of (price_level, "swing_high" | "swing_low", bars_ago)
     """
     df = data.tail(lookback).copy()
+    total_bars = len(df)
 
-    if len(df) < window * 2 + 1:
+    if total_bars < window * 2 + 1:
         return []
 
     high = df['High'].values
@@ -72,11 +102,12 @@ def detect_swing_levels(
 
     # Find local maxima (swing highs)
     swing_high_indices = argrelextrema(high, np.greater_equal, order=window)[0]
-    swing_highs = [(high[i], "swing_high") for i in swing_high_indices]
+    # Calculate bars ago (from end of data)
+    swing_highs = [(high[i], "swing_high", total_bars - i - 1) for i in swing_high_indices]
 
     # Find local minima (swing lows)
     swing_low_indices = argrelextrema(low, np.less_equal, order=window)[0]
-    swing_lows = [(low[i], "swing_low") for i in swing_low_indices]
+    swing_lows = [(low[i], "swing_low", total_bars - i - 1) for i in swing_low_indices]
 
     return swing_highs + swing_lows
 
@@ -86,7 +117,7 @@ def detect_volume_weighted_levels(
     num_bins: int = 50,
     top_n: int = 5,
     lookback: int = 100
-) -> List[float]:
+) -> List[Tuple[float, str, int]]:
     """
     Detect price levels with highest volume accumulation.
 
@@ -100,7 +131,7 @@ def detect_volume_weighted_levels(
         lookback: How many recent bars to analyze
 
     Returns:
-        List of price levels with high volume
+        List of (price_level, "volume", bars_ago) tuples
     """
     df = data.tail(lookback).copy()
 
@@ -133,14 +164,15 @@ def detect_volume_weighted_levels(
     # Get top N levels by volume
     top_levels = volume_profile.nlargest(top_n).index.astype(float).tolist()
 
-    return top_levels
+    # Volume levels span the lookback, use middle as approximate age
+    return [(level, "volume", lookback // 2) for level in top_levels]
 
 
 def detect_bollinger_touches(
     data: pd.DataFrame,
     threshold: float = 0.0005,
     lookback: int = 100
-) -> List[Tuple[float, str]]:
+) -> List[Tuple[float, str, int]]:
     """
     Detect levels where price repeatedly touches Bollinger Bands.
 
@@ -150,15 +182,17 @@ def detect_bollinger_touches(
         lookback: How many recent bars to analyze
 
     Returns:
-        List of (price_level, "bb_upper" | "bb_lower")
+        List of (price_level, "bb_upper" | "bb_lower", bars_ago)
     """
     if 'bb_upper' not in data.columns or 'bb_lower' not in data.columns:
         return []
 
     df = data.tail(lookback).copy()
+    total_bars = len(df)
     touches = []
 
-    for idx, row in df.iterrows():
+    for i, (idx, row) in enumerate(df.iterrows()):
+        bars_ago = total_bars - i - 1
         close = row['Close']
         upper = row.get('bb_upper')
         lower = row.get('bb_lower')
@@ -167,9 +201,9 @@ def detect_bollinger_touches(
             continue
 
         if upper != 0 and abs(close - upper) / upper < threshold:
-            touches.append((float(upper), "bb_upper"))
+            touches.append((float(upper), "bb_upper", bars_ago))
         if lower != 0 and abs(close - lower) / lower < threshold:
-            touches.append((float(lower), "bb_lower"))
+            touches.append((float(lower), "bb_lower", bars_ago))
 
     return touches
 
@@ -178,7 +212,7 @@ def detect_round_numbers(
     current_price: float,
     pip_step: float = 0.01,
     num_levels: int = 5
-) -> List[float]:
+) -> List[Tuple[float, str, int]]:
     """
     Generate psychological round number levels.
 
@@ -191,7 +225,7 @@ def detect_round_numbers(
         num_levels: Number of levels above and below
 
     Returns:
-        List of round number price levels
+        List of (price_level, "round", bars_ago) - round numbers are timeless so age=0
     """
     # Find the nearest round number
     base = np.floor(current_price / pip_step) * pip_step
@@ -199,20 +233,20 @@ def detect_round_numbers(
     levels = []
     for i in range(-num_levels, num_levels + 1):
         level = base + (i * pip_step)
-        levels.append(level)
+        levels.append((level, "round", 0))  # Round numbers are always "current"
 
     return levels
 
 
 def cluster_and_merge_levels(
-    levels: List[Tuple[float, str]],
+    levels: List[Tuple[float, str, int]],
     threshold_pct: float = 0.002
 ) -> List[PriceZone]:
     """
     Cluster nearby price levels into zones using DBSCAN.
 
     Args:
-        levels: List of (price, source) tuples
+        levels: List of (price, source, bars_ago) tuples
         threshold_pct: Maximum distance (as % of price) to cluster
 
     Returns:
@@ -223,6 +257,7 @@ def cluster_and_merge_levels(
 
     prices = np.array([l[0] for l in levels]).reshape(-1, 1)
     sources = [l[1] for l in levels]
+    ages = [l[2] for l in levels]
 
     # DBSCAN clustering
     avg_price = np.mean(prices)
@@ -239,8 +274,14 @@ def cluster_and_merge_levels(
         mask = labels == label
         cluster_prices = prices[mask].flatten()
         cluster_sources = [sources[i] for i, m in enumerate(mask) if m]
+        cluster_ages = [ages[i] for i, m in enumerate(mask) if m]
 
         center = float(np.mean(cluster_prices))
+
+        # Calculate age metrics
+        oldest_bar = max(cluster_ages) if cluster_ages else 0
+        newest_bar = min(cluster_ages) if cluster_ages else 0
+
         zone = PriceZone(
             zone_type=ZoneType.SUPPORT,  # Will be updated later
             center=center,
@@ -248,7 +289,11 @@ def cluster_and_merge_levels(
             lower_bound=float(np.min(cluster_prices)),
             strength=0.0,  # Will be calculated
             touches=len(cluster_prices),
-            sources=list(set(cluster_sources))
+            sources=list(set(cluster_sources)),
+            first_detected_idx=oldest_bar,
+            last_tested_idx=newest_bar,
+            age_bars=oldest_bar,
+            days_since_test=newest_bar  # Approximate for daily data
         )
         zones.append(zone)
 
@@ -289,7 +334,10 @@ def calculate_zone_strength(zone: PriceZone, weights: dict = None) -> float:
 def analyze_support_resistance(
     data: pd.DataFrame,
     pip_step: float = 0.01,
-    config: dict = None
+    config: dict = None,
+    sr_lookback: int = None,
+    min_strength: float = 0.0,
+    min_age_bars: int = 0
 ) -> SRResult:
     """
     Main function to detect all support and resistance zones.
@@ -306,6 +354,9 @@ def analyze_support_resistance(
         data: DataFrame with OHLCV and indicators
         pip_step: Round number step (0.01 for most pairs, 1.0 for JPY)
         config: Optional config dict
+        sr_lookback: Number of bars to look back for S/R (None = use all data)
+        min_strength: Minimum strength score to include level
+        min_age_bars: Minimum age in bars to include level (filters out recent noise)
 
     Returns:
         SRResult with supports, resistances, and next levels
@@ -316,27 +367,35 @@ def analyze_support_resistance(
     if data.empty:
         return SRResult([], [], 0.0, None, None)
 
+    # Use specified lookback or all available data
+    if sr_lookback and sr_lookback < len(data):
+        analysis_data = data.tail(sr_lookback)
+    else:
+        analysis_data = data
+        sr_lookback = len(data)
+
     current_price = float(data['Close'].iloc[-1])
     all_levels = []
 
-    # 1. Swing levels
+    # 1. Swing levels - use full lookback
     swing_window = config.get("swing_window", 5)
-    swings = detect_swing_levels(data, window=swing_window)
+    swings = detect_swing_levels(analysis_data, window=swing_window, lookback=sr_lookback)
     all_levels.extend(swings)
 
     # 2. Volume levels
-    volume_lookback = config.get("volume_lookback", 100)
-    volume_levels = detect_volume_weighted_levels(data, lookback=volume_lookback)
-    all_levels.extend([(v, "volume") for v in volume_levels])
+    volume_lookback = min(config.get("volume_lookback", 100), sr_lookback)
+    volume_levels = detect_volume_weighted_levels(analysis_data, lookback=volume_lookback)
+    all_levels.extend(volume_levels)
 
     # 3. Bollinger touches (requires indicators calculated)
     bb_threshold = config.get("bollinger_touch_threshold", 0.0005)
-    bb_touches = detect_bollinger_touches(data, threshold=bb_threshold)
+    bb_lookback = min(100, sr_lookback)
+    bb_touches = detect_bollinger_touches(analysis_data, threshold=bb_threshold, lookback=bb_lookback)
     all_levels.extend(bb_touches)
 
     # 4. Round numbers
     round_levels = detect_round_numbers(current_price, pip_step)
-    all_levels.extend([(r, "round") for r in round_levels])
+    all_levels.extend(round_levels)
 
     # 5. Cluster and merge
     merge_threshold = config.get("zone_merge_threshold", 0.002)
@@ -348,6 +407,12 @@ def analyze_support_resistance(
 
     for zone in zones:
         zone.strength = calculate_zone_strength(zone)
+
+        # Apply filters
+        if zone.strength < min_strength:
+            continue
+        if min_age_bars > 0 and zone.age_bars < min_age_bars:
+            continue
 
         if zone.center < current_price:
             zone.zone_type = ZoneType.SUPPORT
@@ -361,7 +426,7 @@ def analyze_support_resistance(
     resistances.sort(key=lambda z: z.center - current_price)
 
     # Limit to max levels
-    max_levels = config.get("max_levels", 3)
+    max_levels = config.get("max_levels", 5)  # Increased default
     supports = supports[:max_levels]
     resistances = resistances[:max_levels]
 

@@ -105,20 +105,25 @@ def fetch_currency_data(
     return pd.DataFrame()
 
 
-def fetch_multi_timeframe_data(symbol: str) -> Dict[str, pd.DataFrame]:
+def fetch_multi_timeframe_data(
+    symbol: str,
+    daily_period: str = "2y"
+) -> Dict[str, pd.DataFrame]:
     """
     Fetch data for all required timeframes (weekly, daily, 4h).
 
     Args:
         symbol: Currency pair symbol
+        daily_period: Period for daily data ("6mo", "1y", "2y")
 
     Returns:
         Dict with keys: 'weekly', 'daily', '4h'
     """
-    daily = fetch_currency_data(symbol, period="6mo", interval="1d")
+    # Fetch more daily data to support longer S/R lookback
+    daily = fetch_currency_data(symbol, period=daily_period, interval="1d")
 
     # Try to get weekly from API, fallback to resampling daily
-    weekly = fetch_currency_data(symbol, period="1y", interval="1wk")
+    weekly = fetch_currency_data(symbol, period="2y", interval="1wk")
     if weekly.empty and not daily.empty:
         weekly = daily.resample('W').agg({
             'Open': 'first',

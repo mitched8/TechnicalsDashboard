@@ -3,7 +3,7 @@
 import streamlit as st
 import pandas as pd
 
-from config import CURRENCY_PAIRS, StrategySettings, get_default_settings
+from config import CURRENCY_PAIRS, StrategySettings, get_default_settings, SR_LOOKBACK_OPTIONS
 from core.data_fetcher import fetch_multi_timeframe_data, validate_data
 from core.indicators import calculate_all_indicators, check_ema_200_trend_confirmed
 from core.support_resistance import analyze_support_resistance
@@ -133,6 +133,30 @@ def main():
         show_trade_setup = st.checkbox("Show Trade Setup", value=True)
         show_raw_data = st.checkbox("Show Raw Data", value=False)
 
+        st.divider()
+
+        # S/R Configuration
+        st.subheader("S/R Levels")
+        sr_lookback_label = st.selectbox(
+            "S/R Lookback Period",
+            options=list(SR_LOOKBACK_OPTIONS.keys()),
+            index=2,  # Default to 1 Year
+            help="Longer periods find more significant historical levels"
+        )
+        sr_lookback = SR_LOOKBACK_OPTIONS[sr_lookback_label]
+
+        sr_min_strength = st.slider(
+            "Min Strength",
+            min_value=0.0, max_value=5.0, value=1.5, step=0.5,
+            help="Filter out weak levels (higher = stronger levels only)"
+        )
+
+        sr_min_age = st.slider(
+            "Min Age (days)",
+            min_value=0, max_value=60, value=0, step=5,
+            help="Filter out recent levels (higher = older levels only)"
+        )
+
         if show_vol_analysis:
             st.divider()
             st.subheader("Volatility")
@@ -166,8 +190,14 @@ def main():
     daily_indicators = indicator_values.get('daily')
     current_price = float(daily_data['Close'].iloc[-1])
 
-    # Analyze S/R
-    sr_result = analyze_support_resistance(daily_data, pip_step=round_step)
+    # Analyze S/R with configurable lookback
+    sr_result = analyze_support_resistance(
+        daily_data,
+        pip_step=round_step,
+        sr_lookback=sr_lookback,
+        min_strength=sr_min_strength,
+        min_age_bars=sr_min_age
+    )
 
     # Detect regimes
     daily_regime = detect_regime(daily_data)
@@ -425,29 +455,64 @@ def main():
 
     # Support/Resistance Levels
     st.subheader("Support & Resistance Levels")
+    st.caption(f"Lookback: {sr_lookback_label} | Min Strength: {sr_min_strength} | Min Age: {sr_min_age}d")
+
     level_col1, level_col2 = st.columns(2)
 
     with level_col1:
         st.markdown("**Resistance Levels**")
         if sr_result.resistances:
-            for i, zone in enumerate(sr_result.resistances[:3]):
+            for i, zone in enumerate(sr_result.resistances[:5]):
                 level_str = format_level_display(current_price, zone.center, pip_decimal)
                 sources = ", ".join(zone.sources)
-                st.markdown(f"**R{i+1}:** {level_str}")
-                st.caption(f"Sources: {sources} | Strength: {zone.strength:.1f}")
+
+                # Age indicator
+                age_emoji = "🔴" if zone.age_bars < 20 else "🟡" if zone.age_bars < 60 else "🟢"
+
+                st.markdown(f"**R{i+1}:** {level_str} {age_emoji}")
+                st.caption(
+                    f"Strength: {zone.strength_category} ({zone.strength:.1f}) | "
+                    f"Age: {zone.age_category} ({zone.age_bars}d) | "
+                    f"Touches: {zone.touches}"
+                )
         else:
             st.info("No resistance levels detected")
 
     with level_col2:
         st.markdown("**Support Levels**")
         if sr_result.supports:
-            for i, zone in enumerate(sr_result.supports[:3]):
+            for i, zone in enumerate(sr_result.supports[:5]):
                 level_str = format_level_display(current_price, zone.center, pip_decimal)
                 sources = ", ".join(zone.sources)
-                st.markdown(f"**S{i+1}:** {level_str}")
-                st.caption(f"Sources: {sources} | Strength: {zone.strength:.1f}")
+
+                # Age indicator
+                age_emoji = "🔴" if zone.age_bars < 20 else "🟡" if zone.age_bars < 60 else "🟢"
+
+                st.markdown(f"**S{i+1}:** {level_str} {age_emoji}")
+                st.caption(
+                    f"Strength: {zone.strength_category} ({zone.strength:.1f}) | "
+                    f"Age: {zone.age_category} ({zone.age_bars}d) | "
+                    f"Touches: {zone.touches}"
+                )
         else:
             st.info("No support levels detected")
+
+    # Legend for age indicators
+    with st.expander("S/R Level Legend"):
+        st.markdown("""
+        **Age Indicators:**
+        - 🔴 Recent (< 20 days) - May be noise
+        - 🟡 Medium (20-60 days) - Developing level
+        - 🟢 Established (60+ days) - More significant
+
+        **Strength Categories:**
+        - Very Strong (5.0+): Multiple confluent sources
+        - Strong (3.5-5.0): Good confluence
+        - Moderate (2.0-3.5): Some confluence
+        - Weak (< 2.0): Single source or few touches
+
+        **Sources:** swing_high/low, volume, bb_upper/lower, round numbers
+        """)
 
     # ========== TRADE SETUP (if enabled) ==========
     if show_trade_setup:

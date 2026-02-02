@@ -31,8 +31,17 @@ SR_CONFIG = {
     "volume_lookback": 100,         # Bars for volume profile analysis
     "zone_merge_threshold": 0.002,  # 0.2% to merge nearby levels
     "min_touches": 2,               # Minimum touches to confirm level
-    "max_levels": 3,                # Max levels to display per direction
+    "max_levels": 5,                # Max levels to display per direction
     "bollinger_touch_threshold": 0.0005,  # How close to band = "touch"
+}
+
+# S/R Lookback Period Options (in trading days)
+SR_LOOKBACK_OPTIONS = {
+    "3 Months": 65,
+    "6 Months": 130,
+    "1 Year": 252,
+    "2 Years": 504,
+    "All Available": None,
 }
 
 # Regime Detection Parameters
