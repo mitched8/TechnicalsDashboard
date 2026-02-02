@@ -288,7 +288,15 @@ def display_zone_details(zone: EnhancedZone, pip_decimal: int):
 
     with info_col1:
         st.markdown(f"**Timeframe:** {zone.source_timeframe.upper()}")
-        st.markdown(f"**Touches:** {zone.touch_count}")
+        st.markdown(f"**Total Touches:** {zone.touch_count}")
+        # Show clustering info
+        if zone.total_clusters > 0:
+            cluster_info = f"({zone.recent_cluster_size} recent"
+            if zone.has_replenished:
+                cluster_info += f", {zone.total_clusters} clusters)"
+            else:
+                cluster_info += ")"
+            st.caption(cluster_info)
 
     with info_col2:
         phase_emoji = {
@@ -308,6 +316,8 @@ def display_zone_details(zone: EnhancedZone, pip_decimal: int):
             badges.append("Role Flip")
         if zone.approach_pattern == ApproachPattern.COMPRESSION:
             badges.append("COMPRESSION")
+        if zone.has_replenished:
+            badges.append("Replenished")
         st.markdown(f"**Flags:** {', '.join(badges) if badges else 'None'}")
 
     # Score breakdown
@@ -481,18 +491,31 @@ with st.expander("Understanding S/R Analysis"):
     S/R levels are not magic lines - they represent zones of order clustering where traders
     have placed stops, limits, and pending orders.
 
-    **Discovery Phase (1-3 tests):** Level is being discovered by the market. Each quality test
-    that holds increases institutional confidence. These are the freshest, most tradeable levels.
+    **Key Insight: Liquidity Replenishes Over Time**
 
-    **Established Phase (3-6 tests):** Level is proven and known. Good for continuation trades
-    as long as bounces remain strong.
+    A level tested 5 times over 2 years is fundamentally different from one tested 5 times
+    in 2 weeks. The former allows liquidity to replenish between tests (new orders placed),
+    while the latter is actively consuming the available liquidity.
 
-    **Depletion Phase (6+ tests):** Liquidity is being consumed with each touch. Watch for:
+    The system tracks "touch clusters" - groups of tests that occur close together in time.
+    When there's a significant gap between tests (~25+ bars on daily), liquidity has time
+    to replenish and the level can regain strength.
+
+    **Discovery Phase (1-3 recent tests):** Level is being discovered by the market. Each quality
+    test that holds increases institutional confidence. These are the freshest, most tradeable levels.
+
+    **Established Phase:** Level is proven and known. May have multiple test clusters over time
+    with replenishment between them. Look for "Replenished" flag - these levels are strong because
+    liquidity has been restored after previous tests.
+
+    **Depletion Phase (6+ rapid tests):** Liquidity is being consumed with each touch. Key warning
+    signs:
+    - Many tests in a short time period (same cluster)
     - Diminishing bounces (each reaction smaller than the last)
     - Tighter consolidation near the level
-    - Volume pickup on approaches
 
-    **Exhausted Phase:** Level is likely to break. The orders that made it hold are largely filled.
+    **Exhausted Phase:** Level is likely to break. Rapid repeated tests with diminishing bounces
+    indicate the orders that made it hold are largely filled.
 
     ### Compression Patterns
 

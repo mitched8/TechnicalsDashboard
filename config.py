@@ -64,6 +64,13 @@ CONFLUENCE_WEIGHTS = {
 
 # Professional S/R Scoring Configuration (for SR Analysis page)
 SR_SCORING_CONFIG = {
+    # Liquidity replenishment thresholds (bars between tests to consider replenished)
+    # If touches are further apart than this, liquidity has time to restore
+    "replenish_threshold_weekly": 8,     # ~2 months for weekly
+    "replenish_threshold_daily": 25,     # ~5 weeks for daily
+    "replenish_threshold_4h": 30,        # ~5 days for 4h
+    "replenish_threshold_1h": 48,        # ~2 days for 1h
+
     # Timeframe significance (0-3 points)
     "tf_weekly": 3.0,
     "tf_daily": 2.0,

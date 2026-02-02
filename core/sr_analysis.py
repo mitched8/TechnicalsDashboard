@@ -82,6 +82,11 @@ class EnhancedZone:
     touch_count: int
     touches: List[TouchEvent] = field(default_factory=list)
 
+    # Touch clustering (for liquidity replenishment analysis)
+    recent_cluster_size: int = 0      # Touches in most recent cluster
+    total_clusters: int = 0           # Number of separate test clusters
+    has_replenished: bool = False     # Level has had time to replenish
+
     # Timeframe info
     source_timeframe: str
     timeframe_score: float
@@ -117,14 +122,22 @@ class EnhancedZone:
 
     @property
     def liquidity_description(self) -> str:
-        """Get description of liquidity state."""
-        descriptions = {
+        """Get description of liquidity state with replenishment context."""
+        base_descriptions = {
             LiquidityPhase.DISCOVERY: "Fresh level, gaining strength",
             LiquidityPhase.ESTABLISHED: "Proven level, likely to hold",
-            LiquidityPhase.DEPLETION: "Many tests, liquidity being consumed",
+            LiquidityPhase.DEPLETION: "Rapid tests, liquidity being consumed",
             LiquidityPhase.EXHAUSTED: "High break probability",
         }
-        return descriptions.get(self.liquidity_phase, "Unknown")
+        desc = base_descriptions.get(self.liquidity_phase, "Unknown")
+
+        # Add replenishment context
+        if self.has_replenished and self.total_clusters > 1:
+            desc += f" (replenished {self.total_clusters - 1}x)"
+        elif self.recent_cluster_size > 0:
+            desc += f" ({self.recent_cluster_size} recent tests)"
+
+        return desc
 
     @property
     def diminishing_bounces(self) -> bool:
@@ -279,44 +292,133 @@ def analyze_touch_quality(
     return touches
 
 
-def determine_liquidity_phase(touches: List[TouchEvent]) -> LiquidityPhase:
+def calculate_touch_clustering(
+    touches: List[TouchEvent],
+    replenish_threshold_bars: int = 25
+) -> Tuple[int, List[List[TouchEvent]]]:
     """
-    Determine the liquidity phase based on touch pattern.
+    Analyze touch clustering to determine if liquidity has time to replenish.
 
-    Discovery: 1-3 tests, level gaining strength
-    Established: Proven level, quality tests
-    Depletion: Many tests, bounces shrinking
-    Exhausted: Very high break probability
+    Touches that are spaced far apart (> threshold bars) allow liquidity to
+    replenish. Only clustered touches consume liquidity.
+
+    Args:
+        touches: List of TouchEvent objects sorted by time
+        replenish_threshold_bars: Bars between touches for liquidity to replenish
+
+    Returns:
+        (effective_touch_count, list_of_touch_clusters)
+
+    Example:
+        Touches at bars [10, 15, 18, 80, 85] with threshold=25:
+        - Cluster 1: [10, 15, 18] - rapid tests, consuming liquidity
+        - Cluster 2: [80, 85] - new cluster after replenishment
+        - Effective count for depletion = max cluster size = 3
+    """
+    if not touches:
+        return 0, []
+
+    # Sort by bar index
+    sorted_touches = sorted(touches, key=lambda t: t.bar_index)
+
+    clusters = []
+    current_cluster = [sorted_touches[0]]
+
+    for i in range(1, len(sorted_touches)):
+        bars_since_last = sorted_touches[i].bar_index - sorted_touches[i-1].bar_index
+
+        if bars_since_last <= replenish_threshold_bars:
+            # Close together - same cluster, liquidity being consumed
+            current_cluster.append(sorted_touches[i])
+        else:
+            # Gap is large enough for liquidity to replenish
+            # Start a new cluster
+            clusters.append(current_cluster)
+            current_cluster = [sorted_touches[i]]
+
+    # Don't forget the last cluster
+    clusters.append(current_cluster)
+
+    # Effective touch count is the size of the most recent cluster
+    # (since earlier clusters had time to replenish)
+    recent_cluster_size = len(clusters[-1]) if clusters else 0
+
+    return recent_cluster_size, clusters
+
+
+def determine_liquidity_phase(
+    touches: List[TouchEvent],
+    replenish_threshold_bars: int = 25
+) -> LiquidityPhase:
+    """
+    Determine the liquidity phase based on touch pattern WITH time spacing.
+
+    Key insight: Liquidity replenishes over time. A level tested 5 times over
+    2 years is still strong. A level tested 5 times in 2 weeks is depleted.
+
+    Args:
+        touches: List of touch events
+        replenish_threshold_bars: Bars between touches to consider replenishment
+            (25 bars ~= 5 weeks on daily, ~= 1 week on 4H)
+
+    Phases:
+        Discovery: Recent cluster has 1-3 tests, level gaining strength
+        Established: Proven level with quality tests, not over-tested recently
+        Depletion: Recent cluster has many rapid tests, liquidity being consumed
+        Exhausted: Very high break probability (rapid tests + diminishing bounces)
     """
     if not touches:
         return LiquidityPhase.DISCOVERY
 
-    valid_touches = [t for t in touches if t.held]
-    total_touches = len(touches)
-    held_ratio = len(valid_touches) / total_touches if total_touches > 0 else 1.0
+    # Analyze clustering
+    effective_touches, clusters = calculate_touch_clustering(touches, replenish_threshold_bars)
+    recent_cluster = clusters[-1] if clusters else []
 
-    # Check for diminishing bounces
-    if len(valid_touches) >= 3:
-        recent_bounces = [t.bounce_size_pct for t in valid_touches[-3:]]
-        diminishing = all(recent_bounces[i] >= recent_bounces[i+1] for i in range(len(recent_bounces)-1))
-    else:
-        diminishing = False
+    # Get valid (held) touches in recent cluster
+    valid_in_cluster = [t for t in recent_cluster if t.held]
+    cluster_held_ratio = len(valid_in_cluster) / len(recent_cluster) if recent_cluster else 1.0
 
-    # Determine phase
-    if total_touches <= 3:
-        if held_ratio >= 0.6:
+    # Check for diminishing bounces in the recent cluster
+    diminishing = False
+    if len(valid_in_cluster) >= 3:
+        recent_bounces = [t.bounce_size_pct for t in valid_in_cluster[-3:]]
+        diminishing = all(
+            recent_bounces[i] >= recent_bounces[i+1]
+            for i in range(len(recent_bounces)-1)
+        )
+
+    # Also check if bounces in current cluster are smaller than previous clusters
+    cross_cluster_diminishing = False
+    if len(clusters) >= 2 and valid_in_cluster:
+        prev_cluster = clusters[-2]
+        prev_valid = [t for t in prev_cluster if t.held]
+        if prev_valid:
+            prev_avg_bounce = sum(t.bounce_size_pct for t in prev_valid) / len(prev_valid)
+            curr_avg_bounce = sum(t.bounce_size_pct for t in valid_in_cluster) / len(valid_in_cluster)
+            cross_cluster_diminishing = curr_avg_bounce < prev_avg_bounce * 0.7  # 30% smaller
+
+    # Determine phase based on recent cluster behavior
+    if effective_touches <= 3:
+        if cluster_held_ratio >= 0.6:
+            # Fresh tests or replenished level
+            if len(clusters) > 1:
+                # Has history but recently replenished
+                return LiquidityPhase.ESTABLISHED
             return LiquidityPhase.DISCOVERY
         else:
+            # Even few tests are failing - weak level
             return LiquidityPhase.DEPLETION
-    elif total_touches <= 6:
-        if held_ratio >= 0.7 and not diminishing:
+
+    elif effective_touches <= 6:
+        if cluster_held_ratio >= 0.7 and not diminishing:
             return LiquidityPhase.ESTABLISHED
-        elif diminishing:
+        elif diminishing or cross_cluster_diminishing:
             return LiquidityPhase.DEPLETION
         else:
             return LiquidityPhase.ESTABLISHED
-    else:  # Many touches
-        if diminishing or held_ratio < 0.5:
+
+    else:  # Many rapid touches in recent cluster
+        if diminishing or cross_cluster_diminishing or cluster_held_ratio < 0.5:
             return LiquidityPhase.EXHAUSTED
         else:
             return LiquidityPhase.DEPLETION
@@ -579,8 +681,20 @@ def detect_enhanced_levels(
             atr.tail(lookback)
         )
 
-        # Determine liquidity phase
-        liquidity_phase = determine_liquidity_phase(touches)
+        # Determine liquidity phase with clustering analysis
+        # Use different replenishment thresholds based on timeframe (from config)
+        replenish_threshold = SCORING_CONFIG.get(
+            f"replenish_threshold_{timeframe}",
+            25  # Default fallback
+        )
+
+        liquidity_phase = determine_liquidity_phase(touches, replenish_threshold)
+
+        # Get clustering info for display
+        effective_touches, clusters = calculate_touch_clustering(touches, replenish_threshold)
+        recent_cluster_size = effective_touches
+        total_clusters = len(clusters)
+        has_replenished = total_clusters > 1
 
         # Determine zone type
         if basic_zone.center < current_price:
@@ -617,6 +731,9 @@ def detect_enhanced_levels(
             liquidity_phase=liquidity_phase,
             touch_count=len(touches),
             touches=touches,
+            recent_cluster_size=recent_cluster_size,
+            total_clusters=total_clusters,
+            has_replenished=has_replenished,
             source_timeframe=timeframe,
             timeframe_score=TIMEFRAME_WEIGHTS.get(timeframe, 1.0),
             approach_pattern=approach_pattern,
@@ -768,11 +885,14 @@ def get_zone_trading_notes(zone: EnhancedZone, current_price: float) -> List[str
 
     # Liquidity phase warnings
     if zone.liquidity_phase == LiquidityPhase.EXHAUSTED:
-        notes.append("HIGH BREAK RISK: Level has been tested many times")
+        notes.append(f"HIGH BREAK RISK: {zone.recent_cluster_size} rapid tests in current cluster")
     elif zone.liquidity_phase == LiquidityPhase.DEPLETION:
-        notes.append("Caution: Liquidity being consumed, watch for diminishing bounces")
+        notes.append(f"Caution: {zone.recent_cluster_size} tests consuming liquidity, watch for diminishing bounces")
     elif zone.liquidity_phase == LiquidityPhase.DISCOVERY:
         notes.append("Fresh level: Limited test history, potential for strong reaction")
+    elif zone.liquidity_phase == LiquidityPhase.ESTABLISHED:
+        if zone.has_replenished:
+            notes.append(f"Replenished level: {zone.total_clusters} test clusters over time, liquidity restored")
 
     # Compression warning
     if zone.approach_pattern == ApproachPattern.COMPRESSION:
