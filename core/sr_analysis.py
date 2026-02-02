@@ -717,7 +717,7 @@ def detect_enhanced_levels(
 
         # Calculate age metrics
         first_formed = basic_zone.first_detected_idx
-        last_tested = min(t.bar_index for t in touches) if touches else 0
+        last_tested = max(t.bar_index for t in touches) if touches else 0
         last_tested_bars_ago = len(data) - 1 - last_tested if touches else lookback
 
         # Create enhanced zone

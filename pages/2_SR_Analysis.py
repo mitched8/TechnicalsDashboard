@@ -26,7 +26,7 @@ from core.sr_analysis import (
 
 st.set_page_config(
     page_title="S/R Analysis",
-    page_icon="",
+    page_icon="📊",
     layout="wide"
 )
 
@@ -300,10 +300,10 @@ def display_zone_details(zone: EnhancedZone, pip_decimal: int):
 
     with info_col2:
         phase_emoji = {
-            LiquidityPhase.DISCOVERY: "",
-            LiquidityPhase.ESTABLISHED: "",
-            LiquidityPhase.DEPLETION: "",
-            LiquidityPhase.EXHAUSTED: "",
+            LiquidityPhase.DISCOVERY: "🌱",
+            LiquidityPhase.ESTABLISHED: "✓",
+            LiquidityPhase.DEPLETION: "⚠",
+            LiquidityPhase.EXHAUSTED: "🔴",
         }.get(zone.liquidity_phase, "")
         st.markdown(f"**Liquidity Phase:** {phase_emoji} {zone.liquidity_phase.value.title()}")
         st.markdown(f"_{zone.liquidity_description}_")
