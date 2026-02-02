@@ -336,9 +336,11 @@ def create_main_chart(
     # Update y-axis for RSI
     fig.update_yaxes(range=[0, 100], row=2, col=1)
 
-    # Update y-axis for ADX
+    # Update y-axis for ADX (dynamic range so line doesn't clip - add headroom)
     if has_adx:
-        fig.update_yaxes(range=[0, 60], title_text="ADX", row=4, col=1)
+        adx_max = float(data['adx'].max()) if data['adx'].notna().any() else 60
+        adx_ceil = min(100, max(60, adx_max * 1.2))  # 20% headroom, min 60, max 100
+        fig.update_yaxes(range=[0, adx_ceil], title_text="ADX", row=4, col=1)
 
     return fig
 
