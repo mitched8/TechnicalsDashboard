@@ -29,13 +29,25 @@ def create_main_chart(
     Returns:
         Plotly Figure object
     """
-    fig = make_subplots(
-        rows=3, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.6, 0.2, 0.2],
-        subplot_titles=(title, 'RSI', 'MACD')
-    )
+    # Check if ADX data is available
+    has_adx = all(col in data.columns for col in ['adx', 'plus_di', 'minus_di'])
+
+    if has_adx:
+        fig = make_subplots(
+            rows=4, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.45, 0.15, 0.15, 0.25],
+            subplot_titles=(title, 'RSI', 'MACD', 'ADX Trend Strength')
+        )
+    else:
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.6, 0.2, 0.2],
+            subplot_titles=(title, 'RSI', 'MACD')
+        )
 
     # Candlestick chart
     fig.add_trace(
@@ -238,9 +250,72 @@ def create_main_chart(
 
         fig.add_hline(y=0, line=dict(color='rgba(255,255,255,0.3)', width=1), row=3, col=1)
 
+    # ADX subplot (row 4)
+    if has_adx:
+        # ADX line (purple, main indicator)
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['adx'],
+                mode='lines', name='ADX',
+                line=dict(color='#9c27b0', width=2),
+            ),
+            row=4, col=1
+        )
+
+        # +DI line (green, bullish directional strength)
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['plus_di'],
+                mode='lines', name='+DI',
+                line=dict(color='#26a69a', width=1.5),
+            ),
+            row=4, col=1
+        )
+
+        # -DI line (red, bearish directional strength)
+        fig.add_trace(
+            go.Scatter(
+                x=data.index, y=data['minus_di'],
+                mode='lines', name='-DI',
+                line=dict(color='#ef5350', width=1.5),
+            ),
+            row=4, col=1
+        )
+
+        # Threshold levels with zone shading
+        # Range zone (0-20): light blue/gray - mean reversion favored
+        fig.add_hrect(
+            y0=0, y1=20,
+            fillcolor="rgba(33,150,243,0.1)",
+            line_width=0,
+            row=4, col=1
+        )
+
+        # Transition zone (20-25): light orange
+        fig.add_hrect(
+            y0=20, y1=25,
+            fillcolor="rgba(255,152,0,0.1)",
+            line_width=0,
+            row=4, col=1
+        )
+
+        # Trend zone (25+): light green
+        fig.add_hrect(
+            y0=25, y1=60,
+            fillcolor="rgba(76,175,80,0.05)",
+            line_width=0,
+            row=4, col=1
+        )
+
+        # Threshold lines
+        fig.add_hline(y=20, line=dict(color='rgba(33,150,243,0.6)', dash='dash', width=1), row=4, col=1)  # Range threshold
+        fig.add_hline(y=25, line=dict(color='rgba(255,152,0,0.8)', dash='dash', width=1), row=4, col=1)   # Transition threshold
+        fig.add_hline(y=30, line=dict(color='rgba(76,175,80,0.8)', dash='dash', width=1), row=4, col=1)   # Strong trend threshold
+
     # Layout
+    chart_height = 950 if has_adx else 800
     fig.update_layout(
-        height=800,
+        height=chart_height,
         xaxis_rangeslider_visible=False,
         template='plotly_dark',
         showlegend=True,
@@ -260,6 +335,10 @@ def create_main_chart(
 
     # Update y-axis for RSI
     fig.update_yaxes(range=[0, 100], row=2, col=1)
+
+    # Update y-axis for ADX
+    if has_adx:
+        fig.update_yaxes(range=[0, 60], title_text="ADX", row=4, col=1)
 
     return fig
 
