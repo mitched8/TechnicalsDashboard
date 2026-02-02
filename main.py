@@ -518,26 +518,30 @@ def main():
         with tabs[0]:  # Momentum
             for name, exp in explanations.items():
                 if exp.category == "momentum":
-                    with st.expander(exp.name):
-                        display_signal_explanation(exp)
+                    st.markdown(f"#### {exp.name}")
+                    display_signal_explanation(exp)
+                    st.divider()
 
         with tabs[1]:  # Trend
             for name, exp in explanations.items():
                 if exp.category == "trend":
-                    with st.expander(exp.name):
-                        display_signal_explanation(exp)
+                    st.markdown(f"#### {exp.name}")
+                    display_signal_explanation(exp)
+                    st.divider()
 
         with tabs[2]:  # Volatility
             for name, exp in explanations.items():
                 if exp.category == "volatility":
-                    with st.expander(exp.name):
-                        display_signal_explanation(exp)
+                    st.markdown(f"#### {exp.name}")
+                    display_signal_explanation(exp)
+                    st.divider()
 
         with tabs[3]:  # Support/Resistance
             for name, exp in explanations.items():
                 if exp.category == "support_resistance":
-                    with st.expander(exp.name):
-                        display_signal_explanation(exp)
+                    st.markdown(f"#### {exp.name}")
+                    display_signal_explanation(exp)
+                    st.divider()
 
     st.divider()
 

@@ -80,16 +80,17 @@ class EnhancedZone:
     # Liquidity analysis
     liquidity_phase: LiquidityPhase
     touch_count: int
+
+    # Timeframe info (no defaults - must come before fields with defaults)
+    source_timeframe: str
+    timeframe_score: float
+
     touches: List[TouchEvent] = field(default_factory=list)
 
     # Touch clustering (for liquidity replenishment analysis)
     recent_cluster_size: int = 0      # Touches in most recent cluster
     total_clusters: int = 0           # Number of separate test clusters
     has_replenished: bool = False     # Level has had time to replenish
-
-    # Timeframe info
-    source_timeframe: str
-    timeframe_score: float
 
     # Pattern detection
     approach_pattern: Optional[ApproachPattern] = None
