@@ -48,6 +48,79 @@ A multi-pair summary page that aggregates key statistics across all tracked curr
 
 **Implementation:** `st.dataframe()` with column styling or custom HTML table
 
+**Filtering & Sorting:**
+The grid should support both filtering and sorting on all columns.
+
+*Filter Controls (above grid):*
+| Filter | Type | Options |
+|--------|------|---------|
+| **Regime** | Multi-select | Range, Transition, Trend |
+| **MTF Align** | Multi-select | Aligned Bullish, Aligned Bearish, Mixed |
+| **Vol State** | Multi-select | High, Normal, Low, Squeeze |
+| **Bias** | Multi-select | Long, Short, Neutral |
+| **Min ADX** | Slider | 0-50 |
+| **Min Confluence** | Slider | 0-10 |
+| **% Change Direction** | Toggle | Show only positive 1D / negative 1D / all |
+
+*Sorting:*
+- Click column headers to sort ascending/descending
+- Default sort: by Confluence (descending) to show best opportunities first
+- Secondary sort option via dropdown
+
+```python
+# Filter implementation example
+def apply_filters(df: pd.DataFrame, filters: Dict) -> pd.DataFrame:
+    filtered = df.copy()
+
+    if filters.get('regime'):
+        filtered = filtered[filtered['Regime'].isin(filters['regime'])]
+
+    if filters.get('mtf_align'):
+        filtered = filtered[filtered['MTF Align'].isin(filters['mtf_align'])]
+
+    if filters.get('vol_state'):
+        filtered = filtered[filtered['Vol State'].isin(filters['vol_state'])]
+
+    if filters.get('bias'):
+        filtered = filtered[filtered['Bias'].isin(filters['bias'])]
+
+    if filters.get('min_adx'):
+        filtered = filtered[filtered['ADX'] >= filters['min_adx']]
+
+    if filters.get('min_confluence'):
+        filtered = filtered[filtered['Confluence'] >= filters['min_confluence']]
+
+    if filters.get('pct_direction') == 'positive':
+        filtered = filtered[filtered['Chg 1D'] > 0]
+    elif filters.get('pct_direction') == 'negative':
+        filtered = filtered[filtered['Chg 1D'] < 0]
+
+    return filtered
+```
+
+*UI Layout:*
+```python
+# Streamlit filter controls
+with st.expander("Filters", expanded=False):
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        regime_filter = st.multiselect("Regime", ["Range", "Transition", "Trend"])
+        mtf_filter = st.multiselect("MTF Align", ["Aligned Bullish", "Aligned Bearish", "Mixed"])
+
+    with col2:
+        vol_filter = st.multiselect("Vol State", ["High", "Normal", "Low", "Squeeze"])
+        bias_filter = st.multiselect("Bias", ["Long", "Short", "Neutral"])
+
+    with col3:
+        min_adx = st.slider("Min ADX", 0, 50, 0)
+        min_confluence = st.slider("Min Confluence", 0.0, 10.0, 0.0)
+
+    with col4:
+        pct_direction = st.radio("1D Change", ["All", "Positive only", "Negative only"])
+        sort_by = st.selectbox("Sort by", ["Confluence", "ADX", "Chg 1D", "Chg 1W", "Chg 1M"])
+```
+
 ---
 
 ### Section 3: Regime Distribution
