@@ -54,6 +54,8 @@ The grid should support both filtering and sorting on all columns.
 *Filter Controls (above grid):*
 | Filter | Type | Options |
 |--------|------|---------|
+| **Currency Search** | Text input | Type "USD" to match EURUSD, USDJPY, AUDUSD, USDCNH |
+| **Pair** | Multi-select | EURUSD, GBPUSD, USDJPY, AUDUSD, USDCNH |
 | **Regime** | Multi-select | Range, Transition, Trend |
 | **MTF Align** | Multi-select | Aligned Bullish, Aligned Bearish, Mixed |
 | **Vol State** | Multi-select | High, Normal, Low, Squeeze |
@@ -61,6 +63,12 @@ The grid should support both filtering and sorting on all columns.
 | **Min ADX** | Slider | 0-50 |
 | **Min Confluence** | Slider | 0-10 |
 | **% Change Direction** | Toggle | Show only positive 1D / negative 1D / all |
+
+*Currency Search Logic:*
+- Searches both base and quote currency (e.g., "USD" matches pairs where USD is base OR quote)
+- Case-insensitive matching
+- Partial match supported (e.g., "JP" matches USDJPY)
+- Can combine with pair multi-select for precise control
 
 *Sorting:*
 - Click column headers to sort ascending/descending
@@ -71,6 +79,15 @@ The grid should support both filtering and sorting on all columns.
 # Filter implementation example
 def apply_filters(df: pd.DataFrame, filters: Dict) -> pd.DataFrame:
     filtered = df.copy()
+
+    # Currency search - matches base or quote currency
+    if filters.get('currency_search'):
+        search_term = filters['currency_search'].upper()
+        filtered = filtered[filtered['Pair'].str.upper().str.contains(search_term)]
+
+    # Specific pair selection
+    if filters.get('pairs'):
+        filtered = filtered[filtered['Pair'].isin(filters['pairs'])]
 
     if filters.get('regime'):
         filtered = filtered[filtered['Regime'].isin(filters['regime'])]
@@ -102,6 +119,24 @@ def apply_filters(df: pd.DataFrame, filters: Dict) -> pd.DataFrame:
 ```python
 # Streamlit filter controls
 with st.expander("Filters", expanded=False):
+    # Row 1: Currency/Pair filters
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        currency_search = st.text_input(
+            "Currency Search",
+            placeholder="e.g., USD, EUR, JPY...",
+            help="Type a currency code to filter pairs containing that currency"
+        )
+    with filter_col2:
+        pair_filter = st.multiselect(
+            "Select Pairs",
+            ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCNH"],
+            default=[]
+        )
+
+    st.divider()
+
+    # Row 2: Metric filters
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
