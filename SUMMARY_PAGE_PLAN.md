@@ -25,23 +25,26 @@ A multi-pair summary page that aggregates key statistics across all tracked curr
 ### Section 2: Pair Comparison Grid
 **Purpose:** Side-by-side comparison of all pairs with key metrics
 
-| Pair | Price | ADX | Regime | MTF Align | Vol State | Bias | Confluence |
-|------|-------|-----|--------|-----------|-----------|------|------------|
-| EURUSD | 1.0845 | 24.5 | Transition | Mixed | Normal | Neutral | 4.2 |
-| GBPUSD | 1.2650 | 32.1 | Trend | Bullish | Normal | Long | 7.8 |
-| USDJPY | 149.50 | 18.2 | Range | Mixed | Low | Neutral | 3.1 |
-| AUDUSD | 0.6520 | 28.7 | Trend | Bearish | High | Short | 6.5 |
-| USDCNH | 7.2450 | 21.3 | Transition | Mixed | Normal | Neutral | 4.8 |
+| Pair | Price | Chg 1D | Chg 1W | Chg 1M | ADX | Regime | MTF Align | Vol State | Bias | Confluence |
+|------|-------|--------|--------|--------|-----|--------|-----------|-----------|------|------------|
+| EURUSD | 1.0845 | +0.25% | -0.82% | +1.45% | 24.5 | Transition | Mixed | Normal | Neutral | 4.2 |
+| GBPUSD | 1.2650 | +0.45% | +1.20% | +2.10% | 32.1 | Trend | Bullish | Normal | Long | 7.8 |
+| USDJPY | 149.50 | -0.12% | +0.35% | -0.90% | 18.2 | Range | Mixed | Low | Neutral | 3.1 |
+| AUDUSD | 0.6520 | -0.38% | -1.50% | -2.80% | 28.7 | Trend | Bearish | High | Short | 6.5 |
+| USDCNH | 7.2450 | +0.08% | +0.22% | +0.65% | 21.3 | Transition | Mixed | Normal | Neutral | 4.8 |
 
 **Key Columns:**
 1. **Pair** - Symbol name
 2. **Price** - Current close price
-3. **ADX** - Current ADX value (color-coded: <20 gray, 20-25 yellow, >25 green)
-4. **Regime** - ADXRegime enum (Range/Transition/Trend with icon)
-5. **MTF Align** - Multi-timeframe alignment status
-6. **Vol State** - Volatility regime (HIGH/NORMAL/LOW/SQUEEZE)
-7. **Bias** - Overall directional bias from signals
-8. **Confluence** - Average confluence score (0-10)
+3. **Chg 1D** - 1-day percentage change (color: green if +, red if -)
+4. **Chg 1W** - 1-week percentage change (color: green if +, red if -)
+5. **Chg 1M** - 1-month percentage change (color: green if +, red if -)
+6. **ADX** - Current ADX value (color-coded: <20 gray, 20-25 yellow, >25 green)
+7. **Regime** - ADXRegime enum (Range/Transition/Trend with icon)
+8. **MTF Align** - Multi-timeframe alignment status
+9. **Vol State** - Volatility regime (HIGH/NORMAL/LOW/SQUEEZE)
+10. **Bias** - Overall directional bias from signals
+11. **Confluence** - Average confluence score (0-10)
 
 **Implementation:** `st.dataframe()` with column styling or custom HTML table
 
@@ -231,6 +234,21 @@ from core.trade_setup import generate_trade_setup
 ### Aggregation Functions Needed
 
 ```python
+def calculate_pct_changes(df: pd.DataFrame) -> Dict[str, float]:
+    """Calculate percentage changes over multiple timeframes"""
+    current_price = df['Close'].iloc[-1]
+
+    # 1-day change
+    pct_1d = ((current_price - df['Close'].iloc[-2]) / df['Close'].iloc[-2]) * 100
+
+    # 1-week change (5 trading days)
+    pct_1w = ((current_price - df['Close'].iloc[-6]) / df['Close'].iloc[-6]) * 100
+
+    # 1-month change (21 trading days)
+    pct_1m = ((current_price - df['Close'].iloc[-22]) / df['Close'].iloc[-22]) * 100
+
+    return {'1d': pct_1d, '1w': pct_1w, '1m': pct_1m}
+
 def aggregate_regime_distribution(pair_data: Dict) -> Dict:
     """Count pairs in each ADX regime"""
     pass
@@ -275,6 +293,9 @@ core/
 class PairSummary:
     symbol: str
     price: float
+    pct_change_1d: float          # 1-day % change
+    pct_change_1w: float          # 1-week % change
+    pct_change_1m: float          # 1-month % change
     adx: float
     adx_regime: ADXRegime
     trend_direction: TrendDirection
@@ -375,6 +396,10 @@ def fetch_all_pair_data(symbols: List[str]) -> Dict:
 ### Per-Pair Metrics Available
 | Metric | Source | Type |
 |--------|--------|------|
+| Price | `data_fetcher.py` | float |
+| % Change 1D | Calculated from OHLC data | float (%) |
+| % Change 1W | Calculated from OHLC data | float (%) |
+| % Change 1M | Calculated from OHLC data | float (%) |
 | ADX Value | `indicators.py` | float |
 | ADX Regime | `regime.py` | ADXRegime enum |
 | +DI, -DI | `indicators.py` | float |
