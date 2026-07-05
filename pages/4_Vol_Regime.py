@@ -20,11 +20,13 @@ from vol_engine.event_study import (
 from vol_engine.har import har_forecast_report
 from vol_engine.event_study import forward_rv
 from vol_engine.hmm import fit_hmm_2state
+from vol_engine.levels import tag_break_events, break_event_masks
+from vol_engine.breadth import compression_breadth
 from vol_engine.playbook import get_playbook
 from vol_engine.rv_estimators import log_returns
 from visualization.vol_regime_charts import (
     state_chart, cone_chart, rv_panel_chart, compression_chart,
-    event_path_chart, har_chart, hmm_chart, STATE_LABEL,
+    event_path_chart, har_chart, hmm_chart, breadth_chart, STATE_LABEL,
 )
 
 st.set_page_config(page_title="Vol Regime", page_icon="🌊", layout="wide")
@@ -247,6 +249,95 @@ for tab, kind, label in [
                     "This maps the signal to an option tenor: own expiries that "
                     "bracket the resolution window."
                 )
+
+        if kind == EventKind.BREAK_CONFIRMED:
+            st.subheader("Conditioned on S/R level history")
+            st.caption(
+                "Breaks split by the broken level's causally-known test history "
+                "(swing-based level tracker — the liquidity-consumption idea: "
+                "well-tested levels hold trapped positioning, so their breaks "
+                "should release more vol than drifts through untouched prices)."
+            )
+            tagged = tag_break_events(events, data, feats)
+            at_tested, elsewhere = break_event_masks(tagged, data.index)
+            split_cols = st.columns(2)
+            for col, sub_mask, sub_label in [
+                (split_cols[0], at_tested, "At tested level (>= 2 prior touches)"),
+                (split_cols[1], elsewhere, "Fresh / no tracked level"),
+            ]:
+                with col:
+                    st.markdown(f"**{sub_label}** — n={int(sub_mask.sum())}")
+                    if sub_mask.sum() == 0:
+                        st.info("No events in this group.")
+                        continue
+                    sub_report = event_study(data, sub_mask, sub_label)
+                    for w in sub_report.warnings:
+                        st.warning(w)
+                    st.dataframe(sub_report.to_frame(), width='stretch',
+                                 hide_index=True)
+            brk = tagged[tagged["kind"] == "break_confirmed"]
+            if not brk.empty:
+                phases = brk["sr_phase"].value_counts().to_dict()
+                st.caption(f"Broken-level phases: {phases}")
+
+
+# ---------------------------------------------------------------------------
+# Cross-pair breadth
+# ---------------------------------------------------------------------------
+
+st.header("Cross-pair breadth")
+st.caption(
+    "A break confirmed while most of the complex is also expanding is more likely "
+    "genuine than a lone-pair move; broad compression means the whole board is "
+    "coiling. Fraction of pairs in each state:"
+)
+
+
+@st.cache_data(show_spinner=False)
+def demo_breadth_frame(donchian: int) -> pd.DataFrame:
+    results = {}
+    for i, seed in enumerate((42, 7, 99, 123)):
+        d, _ = generate_ohlc(seed=seed)
+        results[f"DEMO_{i + 1}"] = classify_states(d, RegimeConfig(donchian_n=donchian))
+    return compression_breadth(results)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def project_breadth_frame(donchian: int):
+    pairs = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCNH=X"]
+    results, skipped = {}, []
+    for sym in pairs:
+        d = load_project_data(sym)
+        if len(d) < MIN_BARS_STATES:
+            skipped.append(f"{sym} ({len(d)} bars)")
+            continue
+        results[sym.replace("=X", "")] = classify_states(
+            d, RegimeConfig(donchian_n=donchian)
+        )
+    frame = compression_breadth(results) if results else pd.DataFrame()
+    return frame, skipped
+
+
+if source.startswith("Synthetic"):
+    st.warning("Breadth below is computed across 4 SYNTHETIC series — mechanics demo only.")
+    breadth_frame = demo_breadth_frame(donchian_n)
+else:
+    with st.spinner("Computing breadth across pairs..."):
+        breadth_frame, skipped = project_breadth_frame(donchian_n)
+    if skipped:
+        st.warning("Skipped (insufficient history): " + ", ".join(skipped))
+
+if breadth_frame.empty:
+    st.info("No pairs with sufficient history for breadth. On the work PC, point the "
+            "engine at long per-pair CSVs (`run_vol_analysis.py --csv-dir`).")
+else:
+    latest = breadth_frame.dropna(subset=["fraction_compressed"]).iloc[-1]
+    b1, b2, b3 = st.columns(3)
+    b1.metric("Compressed now", f"{latest['fraction_compressed']:.0%}",
+              help="Fraction of pairs currently in the compression state")
+    b2.metric("Trending now", f"{latest['fraction_trending']:.0%}")
+    b3.metric("Pairs covered", f"{int(latest['n_pairs'])}")
+    st.plotly_chart(breadth_chart(breadth_frame), width='stretch')
 
 
 # ---------------------------------------------------------------------------

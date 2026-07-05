@@ -231,6 +231,25 @@ def har_chart(forecast: pd.Series, realized_fwd: pd.Series, last_n: int = 750,
     return fig
 
 
+def breadth_chart(breadth: pd.DataFrame, last_n: int = 750,
+                  title: str = "Cross-pair regime breadth") -> go.Figure:
+    """Fraction of the pair complex in each vol state over time."""
+    d = breadth.tail(last_n)
+    fig = go.Figure()
+    for col, color, name in [
+        ("fraction_compressed", YELLOW, "Compressed"),
+        ("fraction_trending", BLUE, "Trending"),
+        ("fraction_break", "#eb6834", "Break attempt"),
+    ]:
+        if col in d.columns:
+            fig.add_trace(go.Scatter(
+                x=d.index, y=d[col], name=name, line=dict(color=color, width=2),
+            ))
+    fig = _base_layout(fig, title, height=340)
+    fig.update_yaxes(title="Fraction of pairs", range=[0, 1])
+    return fig
+
+
 def hmm_chart(p_high: pd.Series, last_n: int = 750,
               title: str = "HMM cross-check: P(high-vol state)") -> go.Figure:
     d = p_high.tail(last_n)
