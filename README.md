@@ -2,6 +2,24 @@
 
 A professional technical analysis dashboard for forex trading, built with Streamlit. This tool provides comprehensive multi-timeframe analysis, support/resistance detection, market regime identification, and automated trade setup generation.
 
+## Vol Regime Engine (new)
+
+`vol_engine/` is a standalone, data-source-agnostic vol analytics package for FX
+options work — regime state machine (range / compression / break / trend with
+acceptance and failure logic), OHLC realized-vol estimators (Parkinson,
+Garman-Klass, Yang-Zhang), vol cones, an event-study harness that measures each
+signal's conditional forward-RV distribution, HAR-RV forecasting with walk-forward
+evaluation, an HMM cross-check, and a state→options-structure playbook.
+
+- Design and methodology: `VOL_ENGINE_PLAN.md`
+- Dashboard surface: `pages/4_Vol_Regime.py`
+- Headless use (work PC, no UI): `python run_vol_analysis.py --csv <ohlc.csv>` or `--demo`
+- Tests: `python -m pytest tests/` (see `requirements-dev.txt`)
+
+The package imports neither Streamlit nor `ta`; input is any DataFrame with
+`Date`-indexed `Open, High, Low, Close` — see `vol_engine/data_io.py` for the CSV
+schema to export from a real data source.
+
 ## Features
 
 ### 🎯 Core Capabilities
